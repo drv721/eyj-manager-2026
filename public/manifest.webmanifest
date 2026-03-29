@@ -1,0 +1,19 @@
+{
+  "name": "EYJ Manager 2026",
+  "short_name": "EYJ",
+  "description": "Fantasy baseball manager — keeper calculator, SGP analytics, FAAB bidding, trade analysis.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#E4E3E0",
+  "theme_color": "#141414",
+  "orientation": "portrait-primary",
+  "categories": ["sports", "utilities"],
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
