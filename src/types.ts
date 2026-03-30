@@ -77,6 +77,17 @@ export interface LiveCategoryStanding {
   ptsGapToFirst: number;    // Points needed to reach #1
 }
 
+export type TransactionType = 'Trade' | 'Add' | 'Drop' | 'Waiver' | 'Roster Move' | 'Other';
+
+export interface TransactionEntry {
+  date: string;
+  team: string;
+  player: string;
+  action: string;
+  type: TransactionType;
+  effective: string;
+}
+
 export interface LeaguePlayer {
   name: string;
   pos: string[];

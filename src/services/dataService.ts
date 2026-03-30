@@ -1,8 +1,8 @@
 import Papa from 'papaparse';
-import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer } from '../types';
+import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry, TransactionType } from '../types';
 import { TEAM_ABBREV } from '../constants';
 
-export type DataType = 'roster' | 'standings' | 'faab' | 'statcast' | 'stuff' | 'leagueroster' | 'unknown';
+export type DataType = 'roster' | 'standings' | 'faab' | 'transactions' | 'statcast' | 'stuff' | 'leagueroster' | 'unknown';
 
 /**
  * Detects the data type by inspecting CSV column headers — filename-independent.
@@ -34,7 +34,12 @@ export function detectDataType(csvText: string): { type: DataType; rowCount: num
     return { type: 'roster', rowCount, confidence: 'high' };
   }
 
-  // FAAB / transactions
+  // CBS league transaction log: Date, Team, Players, Effective
+  if (headers.includes('date') && headers.includes('team') && headers.includes('players') && headers.includes('effective')) {
+    return { type: 'transactions', rowCount, confidence: 'high' };
+  }
+
+  // FAAB bid log
   if (headers.some(h => ['bid', 'winning bid', 'winning_bid', 'amount'].includes(h)) && headers.some(h => h.includes('player') || h.includes('name'))) {
     return { type: 'faab', rowCount, confidence: 'high' };
   }
@@ -274,6 +279,52 @@ export function mapFaabData(rawData: any[]): FaabEntry[] {
     result: (row.Result || row.result || row.Outcome || row.Status || 'Lost').toString().toLowerCase().includes('won') || (row.Result || row.result || row.Outcome || row.Status || '').toString().toLowerCase().includes('success') ? 'Won' : 'Lost',
     runnerUpBid: Number(row.RunnerUpBid || row.runnerUpBid || row['Runner Up Bid'] || row['Second Bid'] || 0)
   }));
+}
+
+/**
+ * Classifies a CBS transaction action string into a TransactionType.
+ */
+function classifyAction(action: string): TransactionType {
+  const a = action.toLowerCase();
+  if (a.includes('traded')) return 'Trade';
+  if (a.includes('added') || a.includes('activated from free')) return 'Add';
+  if (a.includes('dropped')) return 'Drop';
+  if (a.includes('waiver') || a.includes('claimed')) return 'Waiver';
+  if (a.includes('moved') || a.includes('benched') || a.includes('activated') || a.includes('sent to') || a.includes('ir')) return 'Roster Move';
+  return 'Other';
+}
+
+/**
+ * Maps CBS "all transactions" CSV (Date, Team, Players, Effective) into flat TransactionEntry rows.
+ * Each multi-player cell is split into individual entries.
+ */
+export function mapTransactionData(rawData: any[]): TransactionEntry[] {
+  const out: TransactionEntry[] = [];
+  for (const row of rawData) {
+    const date      = String(row.Date || row.date || '').trim();
+    const team      = String(row.Team || row.team || '').trim();
+    const players   = String(row.Players || row.players || '').trim();
+    const effective = String(row.Effective || row.effective || '').trim();
+    if (!players) continue;
+
+    // Each player action is on its own line within the cell
+    const lines = players.split('\n').map(l => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      // Format: "Player Name POS | MLB  - Action text"
+      const dashIdx = line.lastIndexOf(' - ');
+      const action  = dashIdx >= 0 ? line.slice(dashIdx + 3).trim() : '';
+      const playerPart = dashIdx >= 0 ? line.slice(0, dashIdx) : line;
+      const pipeIdx = playerPart.indexOf(' | ');
+      const player  = pipeIdx >= 0 ? playerPart.slice(0, pipeIdx).trim() : playerPart.trim();
+
+      // Strip trailing position abbreviations from player name
+      const name = player.replace(/\s+(?:C|1B|2B|3B|SS|MI|CI|OF|DH|SP|RP|P)(?:,(?:C|1B|2B|3B|SS|MI|CI|OF|DH|SP|RP|P))*$/, '').trim();
+      if (!name || name.length < 2) continue;
+
+      out.push({ date, team, player: name, action, type: classifyAction(action), effective });
+    }
+  }
+  return out;
 }
 
 /**

@@ -33,12 +33,13 @@ import {
   ABBREV_TO_FULLNAME,
   MINOR_LEAGUE_PICKS,
 } from './constants';
-import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer } from './types';
+import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry } from './types';
 
 import {
   mapRosterData,
   mapStandingsData,
   mapFaabData,
+  mapTransactionData,
   mapStatcastData,
   mapStuffData,
   extractCategoriesFromOverall,
@@ -60,6 +61,7 @@ export default function App() {
   const [parsedLeagueDetails, setParsedLeagueDetails] = useState<LeagueDetails | null>(null);
   const [parsedCategoryStandings, setParsedCategoryStandings] = useState<LiveCategoryStanding[] | null>(null);
   const [leagueRoster, setLeagueRoster] = useState<Record<string, LeaguePlayer[]> | null>(null);
+  const [transactions, setTransactions] = useState<TransactionEntry[] | null>(null);
   const [faabBudget, setFaabBudget] = useState(92);
 
   // Central handler: apply parsed data by type. Used by both auto-load and manual import.
@@ -95,6 +97,8 @@ export default function App() {
     } else if (type === 'leagueroster') {
       const lr = parseLeagueRoster(csvText);
       setLeagueRoster(lr);
+    } else if (type === 'transactions') {
+      setTransactions(mapTransactionData(rawData));
     }
   };
 
@@ -117,6 +121,8 @@ export default function App() {
       if (catStandings) setParsedCategoryStandings(JSON.parse(catStandings));
       const lr = localStorage.getItem('eyj_leagueroster');
       if (lr) setLeagueRoster(JSON.parse(lr));
+      const txns = localStorage.getItem('eyj_transactions');
+      if (txns) setTransactions(JSON.parse(txns));
       const budget = localStorage.getItem('eyj_faabBudget');
       if (budget) setFaabBudget(Number(budget));
     } catch (err) {
@@ -133,10 +139,11 @@ export default function App() {
   useEffect(() => { if (parsedLeagueDetails) localStorage.setItem('eyj_leagueDetails', JSON.stringify(parsedLeagueDetails)); }, [parsedLeagueDetails]);
   useEffect(() => { if (parsedCategoryStandings) localStorage.setItem('eyj_categoryStandings', JSON.stringify(parsedCategoryStandings)); }, [parsedCategoryStandings]);
   useEffect(() => { if (leagueRoster) localStorage.setItem('eyj_leagueroster', JSON.stringify(leagueRoster)); }, [leagueRoster]);
+  useEffect(() => { if (transactions) localStorage.setItem('eyj_transactions', JSON.stringify(transactions)); }, [transactions]);
   useEffect(() => { localStorage.setItem('eyj_faabBudget', String(faabBudget)); }, [faabBudget]);
 
   const handleResetData = () => {
-    ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings','eyj_leagueroster'].forEach(k => localStorage.removeItem(k));
+    ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings','eyj_leagueroster','eyj_transactions'].forEach(k => localStorage.removeItem(k));
     setParsedRoster(null);
     setParsedStandings(null);
     setParsedFaab(null);
@@ -145,6 +152,7 @@ export default function App() {
     setParsedLeagueDetails(null);
     setParsedCategoryStandings(null);
     setLeagueRoster(null);
+    setTransactions(null);
   };
 
   return (
@@ -248,6 +256,7 @@ export default function App() {
               faabBudget={faabBudget}
               onBudgetChange={setFaabBudget}
               parsedFaab={parsedFaab}
+              transactions={transactions}
               categoryStandings={parsedCategoryStandings}
             />
           )}
@@ -567,15 +576,101 @@ function calcBid(
   };
 }
 
+const TYPE_COLORS: Record<string, string> = {
+  Trade:        'bg-purple-50 text-purple-700',
+  Add:          'bg-green-50 text-green-700',
+  Drop:         'bg-red-50 text-red-600',
+  Waiver:       'bg-blue-50 text-blue-700',
+  'Roster Move':'bg-gray-100 text-gray-600',
+  Other:        'bg-gray-50 text-gray-500',
+};
+
+function TransactionLog({ transactions }: { transactions: TransactionEntry[] }) {
+  const [teamFilter, setTeamFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
+  const [playerFilter, setPlayerFilter] = useState('');
+
+  const teams = Array.from(new Set(transactions.map(t => t.team))).sort();
+  const types = Array.from(new Set(transactions.map(t => t.type))).sort();
+
+  const filtered = transactions.filter(t =>
+    (!teamFilter   || t.team === teamFilter) &&
+    (!typeFilter   || t.type === typeFilter) &&
+    (!playerFilter || t.player.toLowerCase().includes(playerFilter.toLowerCase()))
+  );
+
+  // Most recent first (sort by date string — CBS format is M/D/YY)
+  const sorted = [...filtered].sort((a, b) => {
+    const da = new Date(a.date.replace(' ET','').trim());
+    const db = new Date(b.date.replace(' ET','').trim());
+    return isNaN(db.getTime()) ? -1 : db.getTime() - da.getTime();
+  });
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
+      <div className="px-6 py-4 border-b border-black/5 flex flex-wrap gap-3 items-center">
+        <h3 className="font-serif italic text-xl mr-auto">
+          Transaction Log <span className="text-sm opacity-40 font-sans not-italic">({filtered.length})</span>
+        </h3>
+        <input
+          value={playerFilter}
+          onChange={e => setPlayerFilter(e.target.value)}
+          placeholder="Search player..."
+          className="text-xs border border-black/10 rounded-lg px-3 py-1.5 bg-[#F8F8F8] focus:outline-none focus:border-[#F27D26] w-36"
+        />
+        <select
+          value={teamFilter}
+          onChange={e => setTeamFilter(e.target.value)}
+          className="text-xs border border-black/10 rounded-lg px-3 py-1.5 bg-[#F8F8F8] focus:outline-none focus:border-[#F27D26]"
+        >
+          <option value="">All teams</option>
+          {teams.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <select
+          value={typeFilter}
+          onChange={e => setTypeFilter(e.target.value)}
+          className="text-xs border border-black/10 rounded-lg px-3 py-1.5 bg-[#F8F8F8] focus:outline-none focus:border-[#F27D26]"
+        >
+          <option value="">All types</option>
+          {types.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+      </div>
+      <div className="grid grid-cols-[1fr_1.2fr_1fr_0.7fr] gap-2 px-6 py-2 bg-[#F8F8F8] border-b border-black/10 text-[10px]">
+        <span className="col-header">Player</span>
+        <span className="col-header">Team</span>
+        <span className="col-header">Action</span>
+        <span className="col-header">Date</span>
+      </div>
+      <div className="max-h-96 overflow-y-auto">
+        {sorted.slice(0, 200).map((entry, i) => (
+          <div key={i} className="grid grid-cols-[1fr_1.2fr_1fr_0.7fr] gap-2 px-6 py-2 border-b border-black/5 items-center hover:bg-[#F8F8F8] transition-colors">
+            <span className="text-sm font-medium truncate">{entry.player}</span>
+            <span className="text-xs opacity-70 truncate">{entry.team}</span>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit ${TYPE_COLORS[entry.type] || TYPE_COLORS.Other}`}>
+              {entry.type}
+            </span>
+            <span className="text-xs opacity-40 font-mono">{entry.date.split(' ')[0]}</span>
+          </div>
+        ))}
+        {sorted.length === 0 && (
+          <p className="px-6 py-8 text-sm opacity-40 italic">No transactions match your filters.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function FAABView({
   faabBudget,
   onBudgetChange,
   parsedFaab,
+  transactions,
   categoryStandings,
 }: {
   faabBudget: number;
   onBudgetChange: (n: number) => void;
   parsedFaab: FaabEntry[] | null;
+  transactions: TransactionEntry[] | null;
   categoryStandings: LiveCategoryStanding[] | null;
   key?: any;
 }) {
@@ -726,11 +821,16 @@ function FAABView({
         </div>
       </div>
 
-      {/* Transaction Log */}
-      {parsedFaab && parsedFaab.length > 0 && (
+      {/* Transaction Log — CBS format */}
+      {transactions && transactions.length > 0 && (
+        <TransactionLog transactions={transactions} />
+      )}
+
+      {/* FAAB Bid Log — legacy format */}
+      {parsedFaab && parsedFaab.length > 0 && !transactions && (
         <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
           <div className="px-6 py-4 border-b border-black/5">
-            <h3 className="font-serif italic text-xl">Transaction Log <span className="text-sm opacity-40 font-sans not-italic">({parsedFaab.length})</span></h3>
+            <h3 className="font-serif italic text-xl">FAAB Bid Log <span className="text-sm opacity-40 font-sans not-italic">({parsedFaab.length})</span></h3>
           </div>
           <div className="grid grid-cols-[1.5fr_0.8fr_1fr_0.6fr_0.6fr] gap-2 px-6 py-2 bg-[#F8F8F8] border-b border-black/10 text-[10px]">
             <span className="col-header">Player</span>
@@ -748,9 +848,7 @@ function FAABView({
                 <span className="font-mono text-sm">${entry.bid}</span>
                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit ${
                   entry.result === 'Won' ? 'text-green-700 bg-green-50' : 'text-gray-500 bg-gray-50'
-                }`}>
-                  {entry.result}
-                </span>
+                }`}>{entry.result}</span>
               </div>
             ))}
           </div>
@@ -1205,12 +1303,13 @@ interface StagedFile {
   confidence: 'high' | 'low';
 }
 
-const DATA_TYPES: Exclude<DataType, 'unknown'>[] = ['leagueroster', 'roster', 'standings', 'faab', 'statcast', 'stuff'];
+const DATA_TYPES: Exclude<DataType, 'unknown'>[] = ['leagueroster', 'roster', 'standings', 'transactions', 'faab', 'statcast', 'stuff'];
 const TYPE_LABELS: Record<DataType, string> = {
   leagueroster: 'League Rosters (All Teams)',
   roster: 'My Roster',
   standings: 'Standings',
-  faab: 'FAAB Log',
+  transactions: 'Transaction Log',
+  faab: 'FAAB Bid Log',
   statcast: 'Statcast',
   stuff: 'Stuff+',
   unknown: '? Unknown',
