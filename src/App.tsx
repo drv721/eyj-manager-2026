@@ -545,7 +545,7 @@ const BID_BASE: Record<PlayerType, Record<BidTier, number>> = {
 };
 
 const TYPE_CATEGORY: Record<PlayerType, string> = {
-  closer: 'SV', sp: 'ERA', power: 'HR', speed: 'SB', rp: 'ERA',
+  closer: 'S', sp: 'ERA', power: 'HR', speed: 'SB', rp: 'ERA',
 };
 
 function calcBid(
@@ -862,30 +862,30 @@ function FAABView({
 // Stat profiles used to estimate each player's SGP contribution.
 // Keys are player names; values are partial category contributions per season.
 const PLAYER_SGP_PROFILES: Record<string, Partial<Record<string, number>>> = {
-  'Freddie Freeman':        { HR: 22, R: 90, RBI: 95, SB: 5,  AVG: 0.282 },
-  'Randy Arozarena':        { HR: 18, R: 78, RBI: 72, SB: 22, AVG: 0.256 },
-  'Jarren Duran':           { HR: 16, R: 85, RBI: 68, SB: 28, AVG: 0.274 },
-  'CJ Abrams':              { HR: 14, R: 82, RBI: 58, SB: 40, AVG: 0.262 },
-  'Willy Adames':           { HR: 22, R: 70, RBI: 80, SB: 6,  AVG: 0.245 },
-  'Kazuma Okamoto':         { HR: 28, R: 68, RBI: 85, SB: 2,  AVG: 0.258 },
-  'Xavier Edwards':         { HR: 2,  R: 72, RBI: 40, SB: 42, AVG: 0.278 },
-  'Garrett Crochet':        { ERA: 3.20, WHIP: 1.10, K: 220, W: 14, SV: 0 },
-  'Kevin Gausman':          { ERA: 3.55, WHIP: 1.15, K: 185, W: 12, SV: 0 },
-  'Raisel Iglesias':        { ERA: 2.90, WHIP: 1.05, K: 70,  W: 4,  SV: 28 },
-  'Daniel Palencia':        { ERA: 3.10, WHIP: 1.12, K: 68,  W: 4,  SV: 28 },
-  'Bryan Abreu':            { ERA: 3.40, WHIP: 1.18, K: 65,  W: 3,  SV: 12 },
-  'Adolis Garcia':          { HR: 24, R: 72, RBI: 80, SB: 8,  AVG: 0.242 },
-  'Josh Naylor':            { HR: 22, R: 68, RBI: 82, SB: 2,  AVG: 0.262 },
-  'Byron Buxton':           { HR: 22, R: 70, RBI: 70, SB: 12, AVG: 0.252 },
-  'Pete Crow-Armstrong':    { HR: 18, R: 78, RBI: 68, SB: 18, AVG: 0.258 },
-  'Colton Cowser':          { HR: 16, R: 70, RBI: 62, SB: 8,  AVG: 0.250 },
-  'Ranger Suarez':          { ERA: 3.70, WHIP: 1.22, K: 155, W: 11, SV: 0 },
-  'Matthew Boyd':           { ERA: 3.90, WHIP: 1.25, K: 160, W: 10, SV: 0 },
-  'Kodai Senga':            { ERA: 3.60, WHIP: 1.15, K: 175, W: 10, SV: 0 },
+  'Freddie Freeman':        { HR: 22, R: 90, RBI: 95, SB: 5,  OBP: 0.384 },
+  'Randy Arozarena':        { HR: 18, R: 78, RBI: 72, SB: 22, OBP: 0.335 },
+  'Jarren Duran':           { HR: 16, R: 85, RBI: 68, SB: 28, OBP: 0.350 },
+  'CJ Abrams':              { HR: 14, R: 82, RBI: 58, SB: 40, OBP: 0.330 },
+  'Willy Adames':           { HR: 22, R: 70, RBI: 80, SB: 6,  OBP: 0.328 },
+  'Kazuma Okamoto':         { HR: 28, R: 68, RBI: 85, SB: 2,  OBP: 0.330 },
+  'Xavier Edwards':         { HR: 2,  R: 72, RBI: 40, SB: 42, OBP: 0.352 },
+  'Garrett Crochet':        { ERA: 3.20, WHIP: 1.10, K: 220, INN: 185, S: 0 },
+  'Kevin Gausman':          { ERA: 3.55, WHIP: 1.15, K: 185, INN: 165, S: 0 },
+  'Raisel Iglesias':        { ERA: 2.90, WHIP: 1.05, K: 70,  INN: 65,  S: 28 },
+  'Daniel Palencia':        { ERA: 3.10, WHIP: 1.12, K: 68,  INN: 62,  S: 28 },
+  'Bryan Abreu':            { ERA: 3.40, WHIP: 1.18, K: 65,  INN: 58,  S: 12 },
+  'Adolis Garcia':          { HR: 24, R: 72, RBI: 80, SB: 8,  OBP: 0.312 },
+  'Josh Naylor':            { HR: 22, R: 68, RBI: 82, SB: 2,  OBP: 0.338 },
+  'Byron Buxton':           { HR: 22, R: 70, RBI: 70, SB: 12, OBP: 0.318 },
+  'Pete Crow-Armstrong':    { HR: 18, R: 78, RBI: 68, SB: 18, OBP: 0.330 },
+  'Colton Cowser':          { HR: 16, R: 70, RBI: 62, SB: 8,  OBP: 0.328 },
+  'Ranger Suarez':          { ERA: 3.70, WHIP: 1.22, K: 155, INN: 165, S: 0 },
+  'Matthew Boyd':           { ERA: 3.90, WHIP: 1.25, K: 160, INN: 160, S: 0 },
+  'Kodai Senga':            { ERA: 3.60, WHIP: 1.15, K: 175, INN: 160, S: 0 },
 };
 
-const BATTING_CATS  = ['HR', 'R', 'RBI', 'SB', 'AVG'];
-const PITCHING_CATS = ['ERA', 'WHIP', 'K', 'W', 'SV'];
+const BATTING_CATS  = ['HR', 'OBP', 'R', 'RBI', 'SB'];
+const PITCHING_CATS = ['ERA', 'INN', 'K', 'S', 'WHIP'];
 const LOWER_IS_BETTER = ['ERA', 'WHIP'];
 
 function sgpDelta(
@@ -2040,8 +2040,8 @@ function AnalyticsView({ categoryStandings }: { categoryStandings: LiveCategoryS
     };
   });
 
-  const batting  = rows.filter(r => ['HR','R','RBI','SB','AVG','OBP'].includes(r.cat));
-  const pitching = rows.filter(r => ['ERA','WHIP','K','W','SV','INN'].includes(r.cat));
+  const batting  = rows.filter(r => ['HR','OBP','R','RBI','SB'].includes(r.cat));
+  const pitching = rows.filter(r => ['ERA','INN','K','S','WHIP'].includes(r.cat));
 
   const RankBar = ({ rank, total }: { rank: number; total: number }) => {
     const pct = rank > 0 ? ((total - rank + 1) / total) * 100 : 50;

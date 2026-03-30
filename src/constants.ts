@@ -50,14 +50,14 @@ export const INITIAL_ROSTER: Player[] = [
 export const CATEGORY_PROJECTIONS: CategoryProjection[] = [
   { cat: 'SB', value: 160, rank: '#1–2' },
   { cat: 'HR', value: 150, rank: 'Mid' },
-  { cat: 'R', value: 850, rank: 'Top 4' }, // Estimated from "Strong"
-  { cat: 'RBI', value: 800, rank: 'Mid' }, // Estimated from "Decent"
-  { cat: 'AVG', value: 0.265, rank: 'Mid' }, // Estimated from "Mixed"
-  { cat: 'SV', value: 52, rank: 'Mid — fragile' },
+  { cat: 'R', value: 850, rank: 'Top 4' },
+  { cat: 'RBI', value: 800, rank: 'Mid' },
+  { cat: 'OBP', value: 0.320, rank: 'Mid' },
+  { cat: 'S', value: 52, rank: 'Mid — fragile' },
   { cat: 'ERA', value: 3.75, rank: 'Top 3' },
   { cat: 'WHIP', value: 1.22, rank: 'Top 3' },
   { cat: 'K', value: 800, rank: 'Mid' },
-  { cat: 'W', value: 75, rank: 'Mid' },
+  { cat: 'INN', value: 1100, rank: 'Mid' },
 ];
 
 export const SGP_DENOMINATORS: SGPDenominator[] = [
@@ -66,7 +66,7 @@ export const SGP_DENOMINATORS: SGPDenominator[] = [
   { cat: 'R', denom: 87.39 },
   { cat: 'RBI', denom: 84.99 },
   { cat: 'SB', denom: 18.13 },
-  { cat: 'SV', denom: 12.60 },
+  { cat: 'S', denom: 12.60 },
   { cat: 'ERA', denom: 0.32 },
   { cat: 'INN', denom: 78.23 },
   { cat: 'K', denom: 119.86 },
@@ -105,7 +105,7 @@ export const ADVANCED_METRICS: AdvancedMetric[] = [
 
 export const SGP_HEATMAP: SGPHeatmap[] = [
   { category: 'SB', pointsToGain: 2.5, difficulty: 'Easy' },
-  { category: 'SV', pointsToGain: 1.5, difficulty: 'Medium' },
+  { category: 'S', pointsToGain: 1.5, difficulty: 'Medium' },
   { category: 'HR', pointsToGain: 0.5, difficulty: 'Hard' },
   { category: 'ERA', pointsToGain: 1.0, difficulty: 'Medium' },
 ];
@@ -175,6 +175,6 @@ export const MINOR_LEAGUE_PICKS: Record<string, Record<number, number[]>> = {
 
 export const OWNER_BEHAVIORS: OwnerBehavior[] = [
   { team: 'Reaper Crew', aggression: 85, preferredCategories: ['HR', 'RBI'] },
-  { team: 'Get Fistered', aggression: 40, preferredCategories: ['AVG', 'WHIP'] },
+  { team: 'Get Fistered', aggression: 40, preferredCategories: ['OBP', 'WHIP'] },
   { team: 'EYJ', aggression: 65, preferredCategories: ['SB', 'K'] },
 ];
