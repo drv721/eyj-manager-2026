@@ -1343,7 +1343,6 @@ function StrategyLabView({
   const [pasteContent, setPasteContent] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [mode, setMode] = useState<'stearns' | 'sarris'>('stearns');
 
   const topEV = parsedStatcast ? [...parsedStatcast].sort((a, b) => (b.ev || 0) - (a.ev || 0)).slice(0, 3) : [];
   const topBarrel = parsedStatcast ? [...parsedStatcast].sort((a, b) => (b.barrelRate || 0) - (a.barrelRate || 0)).slice(0, 3) : [];
@@ -1415,26 +1414,9 @@ function StrategyLabView({
       animate={{ opacity: 1, x: 0 }}
       className="flex flex-col gap-8"
     >
-      <header className="flex justify-between items-end">
-        <div>
-          <h2 className="text-4xl font-serif italic mb-2">Strategy Lab</h2>
-          <p className="text-sm opacity-60">Advanced Process Metrics & Market Efficiency</p>
-        </div>
-        <div className="flex gap-2">
-          {(['stearns', 'sarris'] as const).map(m => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={`text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest transition-all ${
-                mode === m
-                  ? m === 'stearns' ? 'bg-[#F27D26] text-white' : 'bg-[#141414] text-white'
-                  : 'bg-white/60 text-black/50 hover:text-black/80'
-              }`}
-            >
-              {m} Mode
-            </button>
-          ))}
-        </div>
+      <header>
+        <h2 className="text-4xl font-serif italic mb-2">Strategy Lab</h2>
+        <p className="text-sm opacity-60">Cap efficiency · process metrics · regression signals</p>
       </header>
 
       {/* Data Status Bar */}
@@ -1462,6 +1444,8 @@ function StrategyLabView({
           )}
         </div>
       </div>
+
+      <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold -mb-4">Cap &amp; Market Efficiency</p>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* SGP Heatmap */}
@@ -1565,9 +1549,11 @@ function StrategyLabView({
         </div>
       </div>
 
-      {/* Regression Watch — Sarris mode shows this prominently, Stearns mode folds it below */}
+      {/* Regression Watch */}
       {(parsedStuff || parsedStatcast) && (
-        <div className={`bg-white p-6 rounded-2xl shadow-sm border border-black/5 ${mode === 'stearns' ? 'order-last' : ''}`}>
+        <>
+        <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold -mb-4">Process Metrics</p>
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
           <div className="flex justify-between items-center mb-5">
             <h3 className="font-serif italic text-xl">Regression Watch</h3>
             <span className="text-[10px] opacity-40 italic">Your roster vs. process metrics</span>
@@ -1646,6 +1632,7 @@ function StrategyLabView({
             </div>
           )}
         </div>
+        </>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
