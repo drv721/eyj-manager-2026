@@ -77,6 +77,15 @@ export interface LiveCategoryStanding {
   ptsGapToFirst: number;    // Points needed to reach #1
 }
 
+export interface LeaguePlayer {
+  name: string;
+  pos: string[];
+  mlbTeam: string;
+  salary: number;
+  contract: string;
+  status: 'active' | 'reserve' | 'injured' | 'minor';
+}
+
 export interface LeagueDetails {
   battingCategories: string[];
   pitchingCategories: string[];

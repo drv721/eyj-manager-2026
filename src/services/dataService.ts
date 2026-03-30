@@ -1,12 +1,18 @@
 import Papa from 'papaparse';
-import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding } from '../types';
+import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer } from '../types';
+import { TEAM_ABBREV } from '../constants';
 
-export type DataType = 'roster' | 'standings' | 'faab' | 'statcast' | 'stuff' | 'unknown';
+export type DataType = 'roster' | 'standings' | 'faab' | 'statcast' | 'stuff' | 'leagueroster' | 'unknown';
 
 /**
  * Detects the data type by inspecting CSV column headers — filename-independent.
  */
 export function detectDataType(csvText: string): { type: DataType; rowCount: number; confidence: 'high' | 'low' } {
+  // CBS multi-team league roster: contains " Batters" section headers
+  if (csvText.includes(' Batters\n') || csvText.includes(' Batters\r')) {
+    return { type: 'leagueroster', rowCount: csvText.split('\n').length, confidence: 'high' };
+  }
+
   const lines = csvText.trim().split('\n').filter(l => l.trim());
   if (lines.length < 2) return { type: 'unknown', rowCount: 0, confidence: 'low' };
 
@@ -268,6 +274,68 @@ export function mapFaabData(rawData: any[]): FaabEntry[] {
     result: (row.Result || row.result || row.Outcome || row.Status || 'Lost').toString().toLowerCase().includes('won') || (row.Result || row.result || row.Outcome || row.Status || '').toString().toLowerCase().includes('success') ? 'Won' : 'Lost',
     runnerUpBid: Number(row.RunnerUpBid || row.runnerUpBid || row['Runner Up Bid'] || row['Second Bid'] || 0)
   }));
+}
+
+/**
+ * Parses a CBS multi-team league roster CSV into a map of abbrev → players.
+ * Handles multi-line quoted cells by using PapaParser for row splitting.
+ */
+export function parseLeagueRoster(csvText: string): Record<string, LeaguePlayer[]> {
+  const POSITIONS = new Set(['C','1B','2B','3B','SS','MI','CI','OF','DH','SP','RP','P']);
+  const POS_RE = /\s+((?:C|1B|2B|3B|SS|MI|CI|OF|DH|SP|RP|P)(?:,(?:C|1B|2B|3B|SS|MI|CI|OF|DH|SP|RP|P))*)$/;
+
+  const result: Record<string, LeaguePlayer[]> = {};
+
+  // Use PapaParser to handle quoted multi-line cells correctly
+  const parsed = Papa.parse(csvText, { header: false, skipEmptyLines: false, dynamicTyping: false });
+  const rows = parsed.data as string[][];
+
+  let currentAbbrev: string | null = null;
+  let currentStatus: LeaguePlayer['status'] = 'active';
+
+  for (const row of rows) {
+    const firstVal = (row[0] || '').trim();
+
+    // Detect team section headers: "EffYouJobu Batters" / "EffYouJobu Pitchers"
+    if (row.slice(1).every(v => !v || !String(v).trim())) {
+      let matched = false;
+      for (const [fullName, abbrev] of Object.entries(TEAM_ABBREV)) {
+        if (firstVal === `${fullName} Batters` || firstVal === `${fullName} Pitchers`) {
+          currentAbbrev = abbrev;
+          currentStatus = 'active';
+          if (!result[abbrev]) result[abbrev] = [];
+          matched = true;
+          break;
+        }
+      }
+      if (matched) continue;
+      if (firstVal === 'Reserves') { currentStatus = 'reserve'; continue; }
+      if (firstVal === 'Injured')  { currentStatus = 'injured'; continue; }
+      if (firstVal === 'Minors')   { currentStatus = 'minor';   continue; }
+      continue;
+    }
+
+    if (!currentAbbrev) continue;
+    if (!POSITIONS.has(firstVal)) continue;
+
+    const playerRaw = String(row[1] || '').trim();
+    const salary    = parseFloat(String(row[8] || '0')) || 0;
+    const contract  = String(row[9] || '').trim() || 'N';
+
+    // Parse "Cal Raleigh C,DH | SEA " → name="Cal Raleigh", mlbTeam="SEA"
+    const pipeIdx = playerRaw.indexOf(' | ');
+    const mlbTeam    = pipeIdx >= 0 ? playerRaw.slice(pipeIdx + 3).trim() : '';
+    const nameAndPos = pipeIdx >= 0 ? playerRaw.slice(0, pipeIdx) : playerRaw;
+    const posMatch   = nameAndPos.match(POS_RE);
+    const name       = (posMatch ? nameAndPos.slice(0, posMatch.index) : nameAndPos).trim();
+    const pos        = posMatch ? posMatch[1].split(',') : [firstVal];
+
+    if (!name || name.length < 2 || name === 'Pos' || name === 'Players') continue;
+
+    result[currentAbbrev].push({ name, pos, mlbTeam, salary, contract, status: currentStatus });
+  }
+
+  return result;
 }
 
 /**

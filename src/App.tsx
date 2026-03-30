@@ -28,9 +28,12 @@ import {
   ADVANCED_METRICS,
   SGP_HEATMAP,
   OWNER_BEHAVIORS,
-  KEEPER_PROJECTIONS
+  KEEPER_PROJECTIONS,
+  TEAM_ABBREV,
+  ABBREV_TO_FULLNAME,
+  MINOR_LEAGUE_PICKS,
 } from './constants';
-import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding } from './types';
+import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer } from './types';
 
 import {
   mapRosterData,
@@ -41,6 +44,7 @@ import {
   extractCategoriesFromOverall,
   extractRosterRulesFromRoster,
   parseCategoryStandings,
+  parseLeagueRoster,
   detectDataType,
   parseCSVText,
   DataType
@@ -55,6 +59,7 @@ export default function App() {
   const [parsedStuff, setParsedStuff] = useState<any[] | null>(null);
   const [parsedLeagueDetails, setParsedLeagueDetails] = useState<LeagueDetails | null>(null);
   const [parsedCategoryStandings, setParsedCategoryStandings] = useState<LiveCategoryStanding[] | null>(null);
+  const [leagueRoster, setLeagueRoster] = useState<Record<string, LeaguePlayer[]> | null>(null);
   const [faabBudget, setFaabBudget] = useState(92);
 
   // Central handler: apply parsed data by type. Used by both auto-load and manual import.
@@ -87,6 +92,9 @@ export default function App() {
       setParsedStatcast(mapStatcastData(rawData));
     } else if (type === 'stuff') {
       setParsedStuff(mapStuffData(rawData));
+    } else if (type === 'leagueroster') {
+      const lr = parseLeagueRoster(csvText);
+      setLeagueRoster(lr);
     }
   };
 
@@ -107,6 +115,8 @@ export default function App() {
       if (details) setParsedLeagueDetails(JSON.parse(details));
       const catStandings = localStorage.getItem('eyj_categoryStandings');
       if (catStandings) setParsedCategoryStandings(JSON.parse(catStandings));
+      const lr = localStorage.getItem('eyj_leagueroster');
+      if (lr) setLeagueRoster(JSON.parse(lr));
       const budget = localStorage.getItem('eyj_faabBudget');
       if (budget) setFaabBudget(Number(budget));
     } catch (err) {
@@ -122,10 +132,11 @@ export default function App() {
   useEffect(() => { if (parsedStuff) localStorage.setItem('eyj_stuff', JSON.stringify(parsedStuff)); }, [parsedStuff]);
   useEffect(() => { if (parsedLeagueDetails) localStorage.setItem('eyj_leagueDetails', JSON.stringify(parsedLeagueDetails)); }, [parsedLeagueDetails]);
   useEffect(() => { if (parsedCategoryStandings) localStorage.setItem('eyj_categoryStandings', JSON.stringify(parsedCategoryStandings)); }, [parsedCategoryStandings]);
+  useEffect(() => { if (leagueRoster) localStorage.setItem('eyj_leagueroster', JSON.stringify(leagueRoster)); }, [leagueRoster]);
   useEffect(() => { localStorage.setItem('eyj_faabBudget', String(faabBudget)); }, [faabBudget]);
 
   const handleResetData = () => {
-    ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings'].forEach(k => localStorage.removeItem(k));
+    ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings','eyj_leagueroster'].forEach(k => localStorage.removeItem(k));
     setParsedRoster(null);
     setParsedStandings(null);
     setParsedFaab(null);
@@ -133,6 +144,7 @@ export default function App() {
     setParsedStuff(null);
     setParsedLeagueDetails(null);
     setParsedCategoryStandings(null);
+    setLeagueRoster(null);
   };
 
   return (
@@ -244,6 +256,7 @@ export default function App() {
               key="trades"
               roster={(parsedRoster && parsedRoster.length > 0) ? parsedRoster : INITIAL_ROSTER}
               categoryStandings={parsedCategoryStandings}
+              leagueRoster={leagueRoster}
             />
           )}
           {activeTab === 'strategy' && (
@@ -806,95 +819,208 @@ function sgpDelta(
   }).filter((x): x is NonNullable<typeof x> => x !== null);
 }
 
+type PickSlot = { year: number; round: number };
+
+function pickLabel(p: PickSlot) {
+  return `${p.year} R${p.round}`;
+}
+
+function allPicksForTeam(abbrev: string): PickSlot[] {
+  const teamData = MINOR_LEAGUE_PICKS[abbrev];
+  if (!teamData) return [];
+  const out: PickSlot[] = [];
+  for (const [yr, counts] of Object.entries(teamData)) {
+    const year = Number(yr);
+    counts.forEach((count, idx) => {
+      for (let i = 0; i < count; i++) out.push({ year, round: idx + 1 });
+    });
+  }
+  return out.sort((a, b) => a.year - b.year || a.round - b.round);
+}
+
+// Remove one instance of a matching pick from an array
+function removePick(arr: PickSlot[], pick: PickSlot): PickSlot[] {
+  const idx = arr.findIndex(p => p.year === pick.year && p.round === pick.round);
+  if (idx === -1) return arr;
+  return [...arr.slice(0, idx), ...arr.slice(idx + 1)];
+}
+
+// Count remaining available picks (total - selected)
+function availablePicks(abbrev: string, selected: PickSlot[]): PickSlot[] {
+  let pool = allPicksForTeam(abbrev);
+  for (const s of selected) pool = removePick(pool, s);
+  return pool;
+}
+
 function TradesView({
   roster,
   categoryStandings,
+  leagueRoster,
 }: {
   roster: Player[];
   categoryStandings: LiveCategoryStanding[] | null;
+  leagueRoster: Record<string, LeaguePlayer[]> | null;
   key?: any;
 }) {
-  const allNames = roster.map(p => p.name);
-  const [giving,  setGiving]  = useState<string[]>([]);
-  const [getting, setGetting] = useState<string[]>([]);
-  const [opponent, setOpponent] = useState('');
+  const ALL_TEAMS = Object.keys(ABBREV_TO_FULLNAME).sort();
+  const [team1, setTeam1] = useState('EYJ');
+  const [team2, setTeam2] = useState('');
+  const [t1Players, setT1Players] = useState<Set<string>>(new Set());
+  const [t2Players, setT2Players] = useState<Set<string>>(new Set());
+  const [t1Picks,   setT1Picks]   = useState<PickSlot[]>([]);
+  const [t2Picks,   setT2Picks]   = useState<PickSlot[]>([]);
+  const [filter1, setFilter1] = useState('');
+  const [filter2, setFilter2] = useState('');
 
-  const deltas = (giving.length > 0 || getting.length > 0)
-    ? sgpDelta(giving, getting, categoryStandings)
-    : [];
+  // Clear selections when teams change
+  const switchTeam1 = (abbrev: string) => { setTeam1(abbrev); setT1Players(new Set()); setT1Picks([]); setFilter1(''); };
+  const switchTeam2 = (abbrev: string) => { setTeam2(abbrev); setT2Players(new Set()); setT2Picks([]); setFilter2(''); };
 
-  const netSGP    = deltas.reduce((s, d) => s + d.delta, 0);
-  const gains     = deltas.filter(d => d.delta > 0).sort((a, b) => b.delta - a.delta);
-  const losses    = deltas.filter(d => d.delta < 0).sort((a, b) => a.delta - b.delta);
-  const hasData   = giving.length > 0 && getting.length > 0;
-
-  const verdict = !hasData ? null
-    : netSGP >  0.8  ? { label: 'Strong Accept', cls: 'bg-green-100 text-green-800'  }
-    : netSGP >  0.2  ? { label: 'Slight Win',    cls: 'bg-emerald-100 text-emerald-700' }
-    : netSGP > -0.2  ? { label: 'Roughly Fair',  cls: 'bg-yellow-100 text-yellow-800' }
-    : netSGP > -0.8  ? { label: 'Slight Loss',   cls: 'bg-orange-100 text-orange-700' }
-    :                  { label: 'Pass',           cls: 'bg-red-100 text-red-700'       };
-
-  const keeperNote = (name: string) => {
-    const p = roster.find(r => r.name === name);
-    if (!p) return null;
-    if (p.contract.startsWith('M')) return `$${p.salary} Minor`;
-    if (p.contract.startsWith('K')) return `$${p.salary} ${p.contract} keeper`;
-    return `$${p.salary} (auction)`;
+  const getPlayers = (abbrev: string): LeaguePlayer[] => {
+    if (!abbrev) return [];
+    if (leagueRoster?.[abbrev]) return leagueRoster[abbrev];
+    if (abbrev === 'EYJ') return roster.map(p => ({
+      name: p.name, pos: p.pos, mlbTeam: p.team, salary: p.salary, contract: p.contract,
+      status: (p.isMinor ? 'minor' : p.isReserve ? 'reserve' : 'active') as LeaguePlayer['status'],
+    }));
+    return [];
   };
 
-  const PlayerPicker = ({
-    label,
-    selected,
-    onChange,
+  const toggle = (set: Set<string>, name: string): Set<string> => {
+    const next = new Set(set);
+    next.has(name) ? next.delete(name) : next.add(name);
+    return next;
+  };
+
+  const t1List = getPlayers(team1);
+  const t2List = getPlayers(team2);
+  const t1Filtered = t1List.filter(p => p.name.toLowerCase().includes(filter1.toLowerCase()));
+  const t2Filtered = t2List.filter(p => p.name.toLowerCase().includes(filter2.toLowerCase()));
+
+  const t1SelPlayers = t1List.filter(p => t1Players.has(p.name));
+  const t2SelPlayers = t2List.filter(p => t2Players.has(p.name));
+
+  const hasAnything = t1Players.size > 0 || t2Players.size > 0 || t1Picks.length > 0 || t2Picks.length > 0;
+  const hasBothSides = (t1Players.size > 0 || t1Picks.length > 0) && (t2Players.size > 0 || t2Picks.length > 0);
+
+  const t1SalaryOut = t1SelPlayers.reduce((s, p) => s + p.salary, 0);
+  const t2SalaryIn  = t2SelPlayers.reduce((s, p) => s + p.salary, 0);
+  const salaryNet   = t2SalaryIn - t1SalaryOut;
+
+  const giving  = t1SelPlayers.map(p => p.name);
+  const getting = t2SelPlayers.map(p => p.name);
+  const deltas  = hasBothSides ? sgpDelta(giving, getting, categoryStandings) : [];
+  const netSGP  = deltas.reduce((s, d) => s + d.delta, 0);
+  const gains   = deltas.filter(d => d.delta > 0).sort((a, b) => b.delta - a.delta);
+  const losses  = deltas.filter(d => d.delta < 0).sort((a, b) => a.delta - b.delta);
+  const hasSGP  = deltas.length > 0;
+
+  const verdict = !hasBothSides ? null
+    : netSGP >  0.8 ? { label: 'Strong Accept', cls: 'bg-green-100 text-green-800' }
+    : netSGP >  0.2 ? { label: 'Slight Win',    cls: 'bg-emerald-100 text-emerald-700' }
+    : netSGP > -0.2 ? { label: 'Roughly Fair',  cls: 'bg-yellow-100 text-yellow-800' }
+    : netSGP > -0.8 ? { label: 'Slight Loss',   cls: 'bg-orange-100 text-orange-700' }
+    :                 { label: 'Pass',           cls: 'bg-red-100 text-red-700' };
+
+  const statusColor = (s: LeaguePlayer['status']) =>
+    s === 'minor' ? 'text-purple-500' : s === 'injured' ? 'text-red-400' : s === 'reserve' ? 'text-yellow-500' : '';
+
+  const PlayerPanel = ({
+    abbrev, players, filtered, selected, onToggle, filter, onFilter, picks, onAddPick, onRemovePick,
   }: {
-    label: string;
-    selected: string[];
-    onChange: (names: string[]) => void;
-  }) => (
-    <div className="flex-1 min-w-0">
-      <p className="text-[10px] uppercase tracking-widest opacity-50 mb-3 font-bold">{label}</p>
-      <div className="flex flex-col gap-2">
-        {selected.map((name, i) => (
-          <div key={i} className="flex items-center gap-2">
-            <select
-              value={name}
-              onChange={e => {
-                const next = [...selected];
-                next[i] = e.target.value;
-                onChange(next);
-              }}
-              className="flex-1 text-sm border border-black/10 rounded-lg px-3 py-2 bg-[#F8F8F8] focus:outline-none focus:border-[#F27D26]"
-            >
-              <option value="">— pick player —</option>
-              {allNames.map(n => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
-            <button
-              onClick={() => onChange(selected.filter((_, j) => j !== i))}
-              className="text-black/30 hover:text-red-500 transition-colors"
-            >
-              <X size={14} />
-            </button>
+    abbrev: string; players: LeaguePlayer[]; filtered: LeaguePlayer[]; selected: Set<string>;
+    onToggle: (name: string) => void; filter: string; onFilter: (v: string) => void;
+    picks: PickSlot[]; onAddPick: (p: PickSlot) => void; onRemovePick: (p: PickSlot) => void;
+  }) => {
+    const avail = availablePicks(abbrev, picks);
+    const grouped = filtered.reduce((acc, p) => {
+      const k = p.status === 'active' ? 'Active' : p.status === 'reserve' ? 'Reserve' : p.status === 'injured' ? 'Injured' : 'Minors';
+      (acc[k] = acc[k] || []).push(p);
+      return acc;
+    }, {} as Record<string, LeaguePlayer[]>);
+
+    return (
+      <div className="flex-1 min-w-0 flex flex-col gap-3">
+        {players.length === 0 && abbrev && (
+          <p className="text-xs opacity-40 italic">No roster data — upload league roster CSV in Strategy Lab.</p>
+        )}
+        {players.length > 0 && (
+          <>
+            <input
+              value={filter}
+              onChange={e => onFilter(e.target.value)}
+              placeholder="Search players..."
+              className="text-sm border border-black/10 rounded-lg px-3 py-2 bg-[#F8F8F8] focus:outline-none focus:border-[#F27D26] w-full"
+            />
+            <div className="max-h-72 overflow-y-auto flex flex-col gap-1 pr-1">
+              {(['Active','Reserve','Injured','Minors'] as const).map(grp => {
+                const grpPlayers = grouped[grp];
+                if (!grpPlayers?.length) return null;
+                return (
+                  <div key={grp}>
+                    <p className="text-[9px] uppercase tracking-widest opacity-40 font-bold px-1 py-1 sticky top-0 bg-white">{grp}</p>
+                    {grpPlayers.map(p => (
+                      <label key={p.name} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-[#F8F8F8] cursor-pointer transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(p.name)}
+                          onChange={() => onToggle(p.name)}
+                          className="accent-[#F27D26] shrink-0"
+                        />
+                        <span className={`text-sm flex-1 ${selected.has(p.name) ? 'font-bold' : ''}`}>{p.name}</span>
+                        <span className={`text-[10px] font-mono shrink-0 ${statusColor(p.status)}`}>
+                          {p.contract !== 'N' ? p.contract : ''} ${p.salary}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {/* Pick selection */}
+        {abbrev && (
+          <div>
+            <p className="text-[9px] uppercase tracking-widest opacity-40 font-bold mb-1.5">Draft Picks</p>
+            {picks.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-2">
+                {picks.map((p, i) => (
+                  <button
+                    key={i}
+                    onClick={() => onRemovePick(p)}
+                    className="text-[10px] font-bold px-2 py-0.5 bg-[#F27D26] text-white rounded-full flex items-center gap-1"
+                  >
+                    {pickLabel(p)} <X size={10} />
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex flex-wrap gap-1">
+              {avail.length === 0 && picks.length === 0 && (
+                <span className="text-[10px] opacity-30 italic">No picks available</span>
+              )}
+              {avail.filter((p, i, arr) =>
+                arr.findIndex(q => q.year === p.year && q.round === p.round) === i
+              ).map((p, i) => {
+                const cnt = avail.filter(q => q.year === p.year && q.round === p.round).length;
+                return (
+                  <button
+                    key={i}
+                    onClick={() => onAddPick(p)}
+                    className="text-[10px] font-bold px-2 py-0.5 border border-black/20 rounded-full hover:border-[#F27D26] hover:text-[#F27D26] transition-colors"
+                  >
+                    {pickLabel(p)}{cnt > 1 ? ` ×${cnt}` : ''}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        ))}
-        {/* Also allow typing names not on roster */}
-        <button
-          onClick={() => onChange([...selected, ''])}
-          className="text-[10px] uppercase font-bold tracking-widest opacity-50 hover:opacity-100 text-left transition-opacity"
-        >
-          + Add player
-        </button>
+        )}
       </div>
-      {selected.filter(Boolean).map(name => {
-        const note = keeperNote(name);
-        return note ? (
-          <p key={name} className="text-[10px] opacity-40 mt-1">{name}: {note}</p>
-        ) : null;
-      })}
-    </div>
-  );
+    );
+  };
 
   return (
     <motion.div
@@ -904,36 +1030,108 @@ function TradesView({
     >
       <header>
         <h2 className="text-4xl font-serif italic mb-2">Trade Analyzer</h2>
-        <p className="text-sm opacity-60">SGP-weighted delta · keeper implications · verdict</p>
+        <p className="text-sm opacity-60">Select teams · check players · add picks · get verdict</p>
       </header>
 
-      {/* Builder */}
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
-        <div className="flex flex-col md:flex-row gap-6 md:gap-10 items-start">
-          <PlayerPicker label="You give" selected={giving} onChange={setGiving} />
+      {!leagueRoster && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-xl px-5 py-3 text-sm text-yellow-800">
+          Upload the "League Roster (All Teams)" CSV in Strategy Lab to see all teams' players. EYJ roster is available now.
+        </div>
+      )}
 
-          <div className="flex flex-col items-center gap-2 pt-6 shrink-0">
-            <ArrowLeftRight size={28} className="text-[#F27D26]" />
-            <input
-              value={opponent}
-              onChange={e => setOpponent(e.target.value)}
-              placeholder="vs. Team..."
-              className="text-[10px] font-bold text-center w-24 border-b border-black/20 bg-transparent outline-none focus:border-[#F27D26] placeholder:opacity-40"
-            />
-          </div>
+      {/* Two-panel builder */}
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-4 items-start">
+        {/* Team 1 */}
+        <div className="bg-white p-5 rounded-2xl shadow-sm border border-black/5 flex flex-col gap-3">
+          <select
+            value={team1}
+            onChange={e => switchTeam1(e.target.value)}
+            className="text-sm font-bold border border-black/10 rounded-lg px-3 py-2 bg-[#F8F8F8] focus:outline-none focus:border-[#F27D26]"
+          >
+            {ALL_TEAMS.map(a => <option key={a} value={a}>{a} — {ABBREV_TO_FULLNAME[a]}</option>)}
+          </select>
+          <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold">Gives</p>
+          <PlayerPanel
+            abbrev={team1} players={t1List} filtered={t1Filtered} selected={t1Players}
+            onToggle={n => setT1Players(toggle(t1Players, n))}
+            filter={filter1} onFilter={setFilter1}
+            picks={t1Picks}
+            onAddPick={p => setT1Picks([...t1Picks, p])}
+            onRemovePick={p => setT1Picks(removePick(t1Picks, p))}
+          />
+        </div>
 
-          <PlayerPicker label="You receive" selected={getting} onChange={setGetting} />
+        {/* Center arrow */}
+        <div className="flex items-center justify-center pt-16">
+          <ArrowLeftRight size={28} className="text-[#F27D26]" />
+        </div>
+
+        {/* Team 2 */}
+        <div className="bg-white p-5 rounded-2xl shadow-sm border border-black/5 flex flex-col gap-3">
+          <select
+            value={team2}
+            onChange={e => switchTeam2(e.target.value)}
+            className="text-sm font-bold border border-black/10 rounded-lg px-3 py-2 bg-[#F8F8F8] focus:outline-none focus:border-[#F27D26]"
+          >
+            <option value="">— Select opponent —</option>
+            {ALL_TEAMS.filter(a => a !== team1).map(a => <option key={a} value={a}>{a} — {ABBREV_TO_FULLNAME[a]}</option>)}
+          </select>
+          <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold">Gives</p>
+          <PlayerPanel
+            abbrev={team2} players={t2List} filtered={t2Filtered} selected={t2Players}
+            onToggle={n => setT2Players(toggle(t2Players, n))}
+            filter={filter2} onFilter={setFilter2}
+            picks={t2Picks}
+            onAddPick={p => setT2Picks([...t2Picks, p])}
+            onRemovePick={p => setT2Picks(removePick(t2Picks, p))}
+          />
         </div>
       </div>
 
-      {/* Results */}
-      {hasData && (
+      {/* Summary + Analysis */}
+      {hasAnything && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Trade summary */}
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5 flex flex-col gap-4">
+            <h3 className="font-serif italic text-xl">Trade Summary</h3>
+            {[
+              { label: `${team1} gives`, players: t1SelPlayers, picks: t1Picks, salary: t1SalaryOut },
+              { label: `${team2 || '?'} gives`, players: t2SelPlayers, picks: t2Picks, salary: t2SalaryIn },
+            ].map(side => (
+              <div key={side.label}>
+                <p className="text-[10px] uppercase tracking-widest opacity-50 font-bold mb-1">{side.label}</p>
+                {side.players.map(p => (
+                  <div key={p.name} className="flex justify-between text-sm py-0.5">
+                    <span>{p.name}</span>
+                    <span className="font-mono opacity-60">{p.contract !== 'N' ? `${p.contract} ` : ''}${p.salary}</span>
+                  </div>
+                ))}
+                {side.picks.map((p, i) => (
+                  <div key={i} className="text-sm py-0.5 opacity-70">{pickLabel(p)} pick</div>
+                ))}
+                {side.players.length === 0 && side.picks.length === 0 && (
+                  <p className="text-xs opacity-30 italic">Nothing selected</p>
+                )}
+                {side.players.length > 0 && (
+                  <div className="text-xs font-mono font-bold mt-1 opacity-60">Salary: ${side.salary}</div>
+                )}
+              </div>
+            ))}
+            <div className="pt-3 border-t border-black/5">
+              <div className="flex justify-between text-sm">
+                <span className="opacity-60">Salary net (EYJ)</span>
+                <span className={`font-mono font-bold ${salaryNet >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                  {salaryNet >= 0 ? '+' : ''}${salaryNet}
+                </span>
+              </div>
+            </div>
+          </div>
+
           {/* SGP breakdown */}
-          <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-black/5">
-            <h3 className="font-serif italic text-xl mb-5">SGP Category Impact</h3>
-            {deltas.length === 0 ? (
-              <p className="text-sm opacity-40 italic">No stat profiles found for selected players — add them to PLAYER_SGP_PROFILES in constants.</p>
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
+            <h3 className="font-serif italic text-xl mb-4">SGP Category Impact</h3>
+            {!hasSGP ? (
+              <p className="text-sm opacity-40 italic">SGP data available for EYJ players only. Select EYJ as Team 1 for full analysis.</p>
             ) : (
               <div className="flex flex-col gap-3">
                 {[...gains, ...losses].map(d => {
@@ -942,24 +1140,17 @@ function TradesView({
                     <div key={d.cat} className="flex items-center gap-3">
                       <span className="w-12 text-xs font-bold opacity-60">{d.cat}</span>
                       <div className="flex-1 h-6 bg-[#F8F8F8] rounded-full overflow-hidden relative">
-                        <div
-                          className={`h-full rounded-full transition-all ${d.delta > 0 ? 'bg-green-400' : 'bg-red-400'}`}
-                          style={{ width: `${pct}%` }}
-                        />
+                        <div className={`h-full rounded-full ${d.delta > 0 ? 'bg-green-400' : 'bg-red-400'}`} style={{ width: `${pct}%` }} />
                         <span className="absolute inset-y-0 left-3 flex items-center text-[10px] font-mono font-bold">
                           {d.delta > 0 ? '+' : ''}{d.delta.toFixed(2)} SGP
                         </span>
                       </div>
-                      {d.context === 'Need' && (
-                        <span className="text-[10px] text-red-500 font-bold uppercase w-12 shrink-0">Need</span>
-                      )}
-                      {d.context === 'Strong' && (
-                        <span className="text-[10px] text-green-600 font-bold uppercase w-12 shrink-0">Strong</span>
-                      )}
+                      {d.context === 'Need' && <span className="text-[10px] text-red-500 font-bold uppercase w-12 shrink-0">Need</span>}
+                      {d.context === 'Strong' && <span className="text-[10px] text-green-600 font-bold uppercase w-12 shrink-0">Strong</span>}
                     </div>
                   );
                 })}
-                <div className="mt-2 pt-4 border-t border-black/5 flex justify-between items-center">
+                <div className="mt-2 pt-3 border-t border-black/5 flex justify-between">
                   <span className="text-sm font-bold">Net SGP</span>
                   <span className={`font-mono text-lg font-bold ${netSGP > 0 ? 'text-green-600' : 'text-red-500'}`}>
                     {netSGP > 0 ? '+' : ''}{netSGP.toFixed(2)}
@@ -970,34 +1161,31 @@ function TradesView({
           </div>
 
           {/* Verdict */}
-          <div className="bg-[#141414] text-white p-6 rounded-2xl shadow-lg flex flex-col gap-5">
+          <div className="bg-[#141414] text-white p-6 rounded-2xl shadow-lg flex flex-col gap-4">
             <h3 className="font-serif italic text-xl">Verdict</h3>
-            {verdict && (
-              <span className={`text-sm font-bold px-4 py-2 rounded-full w-fit ${verdict.cls}`}>
-                {verdict.label}
-              </span>
+            {verdict ? (
+              <span className={`text-sm font-bold px-4 py-2 rounded-full w-fit ${verdict.cls}`}>{verdict.label}</span>
+            ) : (
+              <p className="text-xs opacity-40 italic">Select players or picks on both sides for a verdict.</p>
             )}
-            <div>
-              <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">Keeper Impact</p>
-              {getting.filter(Boolean).map(name => {
-                const p = roster.find(r => r.name === name);
-                const note = keeperNote(name);
-                if (!p) return null;
-                return (
-                  <div key={name} className="text-sm mb-1">
-                    <span className="font-bold">{name}</span>
-                    <span className="opacity-50 ml-1">{note}</span>
+            {t2SelPlayers.length > 0 && (
+              <div>
+                <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">Incoming Contracts</p>
+                {t2SelPlayers.map(p => (
+                  <div key={p.name} className="text-sm mb-1 flex justify-between">
+                    <span className="font-bold">{p.name}</span>
+                    <span className="opacity-50 font-mono">{p.contract} ${p.salary}</span>
                   </div>
-                );
-              })}
-              {getting.filter(Boolean).every(n => !roster.find(r => r.name === n)) && (
-                <p className="text-xs opacity-40 italic">No keeper data — player not on roster</p>
-              )}
-            </div>
-            {!categoryStandings && (
-              <p className="text-[10px] opacity-40 italic mt-auto">
-                Upload standings CSV to weight verdict by your category needs.
-              </p>
+                ))}
+              </div>
+            )}
+            {t2Picks.length > 0 && (
+              <div>
+                <p className="text-[10px] uppercase opacity-50 mb-1 tracking-widest">Incoming Picks</p>
+                {t2Picks.map((p, i) => (
+                  <div key={i} className="text-sm opacity-70">{pickLabel(p)}</div>
+                ))}
+              </div>
             )}
           </div>
         </div>
@@ -1017,9 +1205,10 @@ interface StagedFile {
   confidence: 'high' | 'low';
 }
 
-const DATA_TYPES: Exclude<DataType, 'unknown'>[] = ['roster', 'standings', 'faab', 'statcast', 'stuff'];
+const DATA_TYPES: Exclude<DataType, 'unknown'>[] = ['leagueroster', 'roster', 'standings', 'faab', 'statcast', 'stuff'];
 const TYPE_LABELS: Record<DataType, string> = {
-  roster: 'Roster',
+  leagueroster: 'League Rosters (All Teams)',
+  roster: 'My Roster',
   standings: 'Standings',
   faab: 'FAAB Log',
   statcast: 'Statcast',

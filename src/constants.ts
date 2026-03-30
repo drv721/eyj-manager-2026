@@ -136,6 +136,43 @@ export const KEEPER_PROJECTIONS: Record<string, number> = {
   'Braden Montgomery': 3,
 };
 
+// Full team name (as it appears in CBS CSV) → short abbreviation used in pick tables
+export const TEAM_ABBREV: Record<string, string> = {
+  'Confederation of American Natives': 'CONFAN',
+  'EffYouJobu': 'EYJ',
+  'Five Point Palm Exploding Heart Technique': 'FPPEHT',
+  'Free Avon Barksdale': 'FAB',
+  'Get Fistered': 'KingFist',
+  'National Organization of Men Against Amazonian Masterhood': 'NOMAAM',
+  "O'Doyle Rules": 'ODR',
+  'Rips&Runs': 'RR',
+  'The 22 Samurai': '22Samurai',
+  'The Left Coast': 'TLC',
+  'The Reaper Crew': 'TRC',
+  'Where the F is Wallace': 'WTF',
+};
+
+export const ABBREV_TO_FULLNAME: Record<string, string> = Object.fromEntries(
+  Object.entries(TEAM_ABBREV).map(([k, v]) => [v, k])
+);
+
+// MINOR_LEAGUE_PICKS[abbrev][year] = [r1count, r2count, r3count]
+// 2029–2030 have no R3 yet — represented as 0
+export const MINOR_LEAGUE_PICKS: Record<string, Record<number, number[]>> = {
+  CONFAN:   { 2026:[0,1,0], 2027:[0,1,0], 2028:[0,0,1], 2029:[1,1,0], 2030:[1,1,0] },
+  EYJ:      { 2026:[2,2,1], 2027:[2,0,1], 2028:[2,1,1], 2029:[1,1,0], 2030:[1,1,0] },
+  FPPEHT:   { 2026:[0,1,2], 2027:[0,1,1], 2028:[1,1,1], 2029:[1,1,0], 2030:[1,1,0] },
+  FAB:      { 2026:[2,0,0], 2027:[1,2,1], 2028:[2,2,1], 2029:[1,1,0], 2030:[1,1,0] },
+  KingFist: { 2026:[0,1,1], 2027:[0,0,1], 2028:[0,1,1], 2029:[1,1,0], 2030:[1,1,0] },
+  NOMAAM:   { 2026:[0,0,3], 2027:[0,1,2], 2028:[1,1,1], 2029:[1,1,0], 2030:[1,1,0] },
+  ODR:      { 2026:[3,0,1], 2027:[2,2,1], 2028:[1,1,1], 2029:[1,1,0], 2030:[1,1,0] },
+  RR:       { 2026:[1,2,1], 2027:[0,1,1], 2028:[1,1,0], 2029:[1,1,0], 2030:[1,1,0] },
+  '22Samurai': { 2026:[0,1,2], 2027:[1,0,2], 2028:[0,1,2], 2029:[1,1,0], 2030:[1,1,0] },
+  TLC:      { 2026:[2,1,0], 2027:[2,1,0], 2028:[1,1,1], 2029:[1,1,0], 2030:[1,1,0] },
+  TRC:      { 2026:[0,2,1], 2027:[1,1,1], 2028:[1,1,1], 2029:[1,1,0], 2030:[1,1,0] },
+  WTF:      { 2026:[2,1,0], 2027:[3,2,1], 2028:[2,1,1], 2029:[1,1,0], 2030:[1,1,0] },
+};
+
 export const OWNER_BEHAVIORS: OwnerBehavior[] = [
   { team: 'Reaper Crew', aggression: 85, preferredCategories: ['HR', 'RBI'] },
   { team: 'Get Fistered', aggression: 40, preferredCategories: ['AVG', 'WHIP'] },
