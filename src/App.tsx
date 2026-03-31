@@ -16,7 +16,8 @@ import {
   Loader2,
   X,
   Key,
-  Pencil
+  Pencil,
+  ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -46,6 +47,7 @@ import {
   extractRosterRulesFromRoster,
   parseCategoryStandings,
   parseLeagueRoster,
+  parseFreeAgents,
   detectDataType,
   parseCSVText,
   DataType
@@ -62,6 +64,8 @@ export default function App() {
   const [parsedCategoryStandings, setParsedCategoryStandings] = useState<LiveCategoryStanding[] | null>(null);
   const [leagueRoster, setLeagueRoster] = useState<Record<string, LeaguePlayer[]> | null>(null);
   const [transactions, setTransactions] = useState<TransactionEntry[] | null>(null);
+  const [freeAgents, setFreeAgents] = useState<LeaguePlayer[]>([]);
+  const [dataTimestamps, setDataTimestamps] = useState<Record<string, string>>({});
   const [faabBudget, setFaabBudget] = useState(92);
 
   // Central handler: apply parsed data by type. Used by both auto-load and manual import.
@@ -99,6 +103,11 @@ export default function App() {
       setLeagueRoster(lr);
     } else if (type === 'transactions') {
       setTransactions(mapTransactionData(rawData));
+    } else if (type === 'freeagents') {
+      setFreeAgents(parseFreeAgents(csvText));
+    }
+    if (type !== 'unknown') {
+      setDataTimestamps(prev => ({ ...prev, [type]: new Date().toISOString() }));
     }
   };
 
@@ -123,6 +132,10 @@ export default function App() {
       if (lr) setLeagueRoster(JSON.parse(lr));
       const txns = localStorage.getItem('eyj_transactions');
       if (txns) setTransactions(JSON.parse(txns));
+      const fa = localStorage.getItem('eyj_freeagents');
+      if (fa) setFreeAgents(JSON.parse(fa));
+      const ts = localStorage.getItem('eyj_timestamps');
+      if (ts) setDataTimestamps(JSON.parse(ts));
       const budget = localStorage.getItem('eyj_faabBudget');
       if (budget) setFaabBudget(Number(budget));
     } catch (err) {
@@ -140,10 +153,12 @@ export default function App() {
   useEffect(() => { if (parsedCategoryStandings) localStorage.setItem('eyj_categoryStandings', JSON.stringify(parsedCategoryStandings)); }, [parsedCategoryStandings]);
   useEffect(() => { if (leagueRoster) localStorage.setItem('eyj_leagueroster', JSON.stringify(leagueRoster)); }, [leagueRoster]);
   useEffect(() => { if (transactions) localStorage.setItem('eyj_transactions', JSON.stringify(transactions)); }, [transactions]);
+  useEffect(() => { if (freeAgents.length > 0) localStorage.setItem('eyj_freeagents', JSON.stringify(freeAgents)); }, [freeAgents]);
+  useEffect(() => { if (Object.keys(dataTimestamps).length > 0) localStorage.setItem('eyj_timestamps', JSON.stringify(dataTimestamps)); }, [dataTimestamps]);
   useEffect(() => { localStorage.setItem('eyj_faabBudget', String(faabBudget)); }, [faabBudget]);
 
   const handleResetData = () => {
-    ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings','eyj_leagueroster','eyj_transactions'].forEach(k => localStorage.removeItem(k));
+    ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings','eyj_leagueroster','eyj_transactions','eyj_freeagents','eyj_timestamps'].forEach(k => localStorage.removeItem(k));
     setParsedRoster(null);
     setParsedStandings(null);
     setParsedFaab(null);
@@ -153,6 +168,8 @@ export default function App() {
     setParsedCategoryStandings(null);
     setLeagueRoster(null);
     setTransactions(null);
+    setFreeAgents([]);
+    setDataTimestamps({});
   };
 
   return (
@@ -258,6 +275,9 @@ export default function App() {
               parsedFaab={parsedFaab}
               transactions={transactions}
               categoryStandings={parsedCategoryStandings}
+              leagueRoster={leagueRoster}
+              freeAgents={freeAgents}
+              dataTimestamps={dataTimestamps}
             />
           )}
           {activeTab === 'trades' && (
@@ -279,6 +299,7 @@ export default function App() {
               parsedStatcast={parsedStatcast}
               parsedStuff={parsedStuff}
               leagueDetails={parsedLeagueDetails}
+              freeAgentsCount={freeAgents.length}
             />
           )}
           {activeTab === 'analytics' && (
@@ -660,26 +681,75 @@ function TransactionLog({ transactions }: { transactions: TransactionEntry[] }) 
   );
 }
 
+// Infer PlayerType from positions array
+function inferPlayerType(pos: string[]): PlayerType {
+  if (pos.includes('SP')) return 'sp';
+  if (pos.includes('RP') || pos.includes('P')) return 'rp';
+  if (pos.includes('C') || pos.includes('1B') || pos.includes('3B') || pos.includes('DH')) return 'power';
+  if (pos.includes('SS') || pos.includes('2B') || pos.includes('OF')) return 'speed';
+  return 'sp';
+}
+
+// Derive available players: uploaded FA list first, otherwise everyone NOT on a roster
+function deriveAvailablePlayers(
+  freeAgents: LeaguePlayer[],
+  leagueRoster: Record<string, LeaguePlayer[]> | null
+): LeaguePlayer[] {
+  if (freeAgents.length > 0) return freeAgents;
+  if (!leagueRoster) return [];
+  const rostered = new Set<string>();
+  Object.values(leagueRoster).forEach(players =>
+    players.forEach(p => rostered.add(p.name.toLowerCase()))
+  );
+  // Return minor-league players from any roster as "available" isn't possible here,
+  // so we just note that no FA list was uploaded.
+  return [];
+}
+
 function FAABView({
   faabBudget,
   onBudgetChange,
   parsedFaab,
   transactions,
   categoryStandings,
+  leagueRoster,
+  freeAgents,
+  dataTimestamps,
 }: {
   faabBudget: number;
   onBudgetChange: (n: number) => void;
   parsedFaab: FaabEntry[] | null;
   transactions: TransactionEntry[] | null;
   categoryStandings: LiveCategoryStanding[] | null;
+  leagueRoster: Record<string, LeaguePlayer[]> | null;
+  freeAgents: LeaguePlayer[];
+  dataTimestamps: Record<string, string>;
   key?: any;
 }) {
+  const [search, setSearch]       = useState('');
+  const [selected, setSelected]   = useState<LeaguePlayer | null>(null);
   const [playerType, setPlayerType] = useState<PlayerType>('sp');
-  const [bidTier, setBidTier]       = useState<BidTier>('contributor');
-  const [playerName, setPlayerName] = useState('');
+  const [bidTier, setBidTier]     = useState<BidTier>('contributor');
+  const [showDropdown, setShowDropdown] = useState(false);
+
+  const available = deriveAvailablePlayers(freeAgents, leagueRoster);
+  const hasFAList = freeAgents.length > 0;
+
+  // Filter available players by search term
+  const searchResults = search.length >= 2
+    ? available.filter(p => p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 8)
+    : [];
+
+  // When a player is selected, auto-set their type
+  const handleSelect = (p: LeaguePlayer) => {
+    setSelected(p);
+    setSearch(p.name);
+    setPlayerType(inferPlayerType(p.pos));
+    setShowDropdown(false);
+  };
 
   const bid = calcBid(playerType, bidTier, faabBudget, categoryStandings);
-  const spentPct = 100 - (faabBudget / 100) * 100;
+  const spentPct = ((120 - faabBudget) / 120) * 100;
 
   const TYPE_LABELS: Record<PlayerType, string> = {
     closer: 'Closer', sp: 'SP', power: 'Power bat', speed: 'Speed/OBP', rp: 'Setup RP',
@@ -688,18 +758,51 @@ function FAABView({
     impact: 'Impact (season-long)', contributor: 'Contributor', flyer: 'Flyer / spot',
   };
 
-  // Derive dynamic waiver priorities from category standings
-  const priorities: string[] = categoryStandings
-    ? categoryStandings
-        .filter(c => c.myRank > 7)
-        .sort((a, b) => b.myRank - a.myRank)
-        .slice(0, 3)
-        .map(c => `Ranked #${c.myRank} in ${c.category} — target ${c.category} producers on wire.`)
-    : [
-        'Prioritize SP depth to cover Senga/Boyd injury risk.',
-        'Save FAAB for mid-season closer churn (Suarez watch in ATL).',
-        'Monitor 3B market if Okamoto struggles early.',
-      ];
+  // Weak categories → waiver priorities
+  const weakCats: LiveCategoryStanding[] = categoryStandings
+    ? categoryStandings.filter(c => c.myRank > 7).sort((a, b) => b.myRank - a.myRank)
+    : [];
+
+  // Weekly targets: FA players who address weak cats + trade targets from other rosters
+  const catToTypes: Record<string, PlayerType[]> = {
+    HR: ['power'], OBP: ['power', 'speed'], R: ['power', 'speed'], RBI: ['power'],
+    SB: ['speed'], ERA: ['sp'], INN: ['sp'], K: ['sp'], S: ['closer'], WHIP: ['sp'],
+  };
+
+  const faTargets: LeaguePlayer[] = (() => {
+    if (!hasFAList || weakCats.length === 0) return available.slice(0, 6);
+    const neededTypes = new Set(weakCats.flatMap(c => catToTypes[c.category] ?? []));
+    const matching = available.filter(p => {
+      const t = inferPlayerType(p.pos);
+      return neededTypes.has(t);
+    });
+    return matching.slice(0, 6);
+  })();
+
+  // Trade targets: players on other rosters who address weak cats
+  const tradeTargets: { player: LeaguePlayer; team: string }[] = (() => {
+    if (!leagueRoster || weakCats.length === 0) return [];
+    const neededTypes = new Set(weakCats.flatMap(c => catToTypes[c.category] ?? []));
+    const targets: { player: LeaguePlayer; team: string }[] = [];
+    for (const [abbrev, players] of Object.entries(leagueRoster)) {
+      if (abbrev === 'EYJ') continue;
+      for (const p of players) {
+        if (p.status === 'active' && neededTypes.has(inferPlayerType(p.pos))) {
+          targets.push({ player: p, team: abbrev });
+        }
+      }
+    }
+    return targets.slice(0, 8);
+  })();
+
+  // Format timestamp for display
+  const fmtTs = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
+      ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  };
+
+  const tsEntries = Object.entries(dataTimestamps);
 
   return (
     <motion.div
@@ -710,7 +813,7 @@ function FAABView({
       <header className="flex justify-between items-end">
         <div>
           <h2 className="text-4xl font-serif italic mb-2">FAAB & Waivers</h2>
-          <p className="text-sm opacity-60">Bid calculator · waiver priorities · transaction log</p>
+          <p className="text-sm opacity-60">Bid calculator · waiver priorities · weekly targets</p>
         </div>
         <div className="text-right">
           <p className="text-[10px] uppercase opacity-50 mb-1">Remaining Budget</p>
@@ -724,8 +827,9 @@ function FAABView({
             />
           </div>
           <div className="w-24 h-1 bg-black/10 rounded-full mt-2 ml-auto">
-            <div className="h-full bg-[#F27D26] rounded-full" style={{ width: `${100 - Math.min(spentPct, 100)}%` }} />
+            <div className="h-full bg-[#F27D26] rounded-full" style={{ width: `${Math.max(0, 100 - spentPct)}%` }} />
           </div>
+          <p className="text-[10px] opacity-40 mt-1">${120 - faabBudget} spent of $120</p>
         </div>
       </header>
 
@@ -737,56 +841,78 @@ function FAABView({
             <DollarSign size={18} className="text-[#F27D26]" />
           </div>
 
-          <div className="flex flex-col gap-4 mb-6">
-            <div>
-              <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">Player</p>
-              <input
-                value={playerName}
-                onChange={e => setPlayerName(e.target.value)}
-                placeholder="Player name..."
-                className="w-full bg-white/10 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#F27D26] placeholder:opacity-30"
-              />
-            </div>
-
-            <div>
-              <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">Type</p>
-              <div className="flex flex-wrap gap-2">
-                {(Object.keys(TYPE_LABELS) as PlayerType[]).map(t => (
+          {/* Player search */}
+          <div className="relative mb-4">
+            <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">Player</p>
+            <input
+              value={search}
+              onChange={e => { setSearch(e.target.value); setSelected(null); setShowDropdown(true); }}
+              onFocus={() => setShowDropdown(true)}
+              placeholder={hasFAList ? 'Search available players…' : 'Type player name…'}
+              className="w-full bg-white/10 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#F27D26] placeholder:opacity-30"
+            />
+            {showDropdown && searchResults.length > 0 && (
+              <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-[#1e1e1e] border border-white/10 rounded-lg overflow-hidden shadow-xl">
+                {searchResults.map((p, i) => (
                   <button
-                    key={t}
-                    onClick={() => setPlayerType(t)}
-                    className={`text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-lg transition-all ${
-                      playerType === t ? 'bg-[#F27D26] text-white' : 'bg-white/10 text-white/50 hover:bg-white/20'
-                    }`}
+                    key={i}
+                    onMouseDown={() => handleSelect(p)}
+                    className="w-full text-left px-4 py-2.5 text-sm hover:bg-white/10 flex justify-between items-center gap-2"
                   >
-                    {TYPE_LABELS[t]}
+                    <span>{p.name}</span>
+                    <span className="text-[10px] opacity-50">{p.pos.join(',')} · {p.mlbTeam}</span>
                   </button>
                 ))}
               </div>
-            </div>
+            )}
+            {!hasFAList && (
+              <p className="text-[10px] opacity-40 mt-1 italic">
+                Upload "Available Players" CSV in Strategy Lab to enable player search.
+              </p>
+            )}
+          </div>
 
-            <div>
-              <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">Impact Level</p>
-              <div className="flex flex-col gap-1">
-                {(Object.keys(TIER_LABELS) as BidTier[]).map(t => (
-                  <button
-                    key={t}
-                    onClick={() => setBidTier(t)}
-                    className={`text-xs font-medium px-3 py-2 rounded-lg text-left transition-all ${
-                      bidTier === t ? 'bg-[#F27D26]/20 border border-[#F27D26]/50' : 'hover:bg-white/5'
-                    }`}
-                  >
-                    {TIER_LABELS[t]}
-                  </button>
-                ))}
-              </div>
+          {/* Auto-detected type — still overridable */}
+          <div className="mb-4">
+            <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">
+              Type {selected && <span className="text-[#F27D26] not-uppercase">(auto-detected)</span>}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {(Object.keys(TYPE_LABELS) as PlayerType[]).map(t => (
+                <button
+                  key={t}
+                  onClick={() => setPlayerType(t)}
+                  className={`text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-lg transition-all ${
+                    playerType === t ? 'bg-[#F27D26] text-white' : 'bg-white/10 text-white/50 hover:bg-white/20'
+                  }`}
+                >
+                  {TYPE_LABELS[t]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mb-6">
+            <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">Impact Level</p>
+            <div className="flex flex-col gap-1">
+              {(Object.keys(TIER_LABELS) as BidTier[]).map(t => (
+                <button
+                  key={t}
+                  onClick={() => setBidTier(t)}
+                  className={`text-xs font-medium px-3 py-2 rounded-lg text-left transition-all ${
+                    bidTier === t ? 'bg-[#F27D26]/20 border border-[#F27D26]/50' : 'hover:bg-white/5'
+                  }`}
+                >
+                  {TIER_LABELS[t]}
+                </button>
+              ))}
             </div>
           </div>
 
           {/* Output */}
           <div className="bg-white/5 rounded-xl p-4 border border-white/10">
             <p className="text-[10px] uppercase opacity-50 mb-3 tracking-widest">
-              {playerName || 'Player'} · {TYPE_LABELS[playerType]} · {TIER_LABELS[bidTier]}
+              {search || 'Player'} · {TYPE_LABELS[playerType]} · {TIER_LABELS[bidTier]}
             </p>
             <div className="flex justify-between items-end mb-2">
               <div>
@@ -804,40 +930,129 @@ function FAABView({
 
         {/* Waiver Priorities */}
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
-          <h3 className="font-serif italic text-xl mb-5">
+          <h3 className="font-serif italic text-xl mb-1">
             Waiver Priorities
             {categoryStandings && (
               <span className="ml-2 text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold not-italic">Live</span>
             )}
           </h3>
-          <ul className="flex flex-col gap-4">
-            {priorities.map((p, i) => (
-              <li key={i} className="flex gap-3 text-sm">
-                <ChevronRight size={16} className="text-[#F27D26] shrink-0 mt-0.5" />
-                <span className="opacity-80">{p}</span>
-              </li>
-            ))}
-          </ul>
+          <p className="text-xs opacity-40 mb-4">Based on your weakest scoring categories</p>
+          {weakCats.length > 0 ? (
+            <ul className="flex flex-col gap-3 mb-4">
+              {weakCats.slice(0, 4).map((c, i) => (
+                <li key={i} className="flex gap-3 text-sm">
+                  <span className="w-12 shrink-0 text-[10px] font-bold bg-orange-50 text-orange-600 px-2 py-1 rounded text-center">{c.category}</span>
+                  <span className="opacity-80">
+                    Ranked <strong>#{c.myRank}</strong> of {c.totalTeams} — {c.ptsGapToNext.toFixed(1)} pts behind #{c.myRank - 1}.
+                    Target {(catToTypes[c.category] ?? []).join('/') || c.category} producers on wire.
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <ul className="flex flex-col gap-4 mb-4">
+              {[
+                'Prioritize SP depth — Senga and Boyd are injury risks.',
+                'Save FAAB for mid-season closer churn.',
+                'Monitor 3B/OBP if Okamoto struggles early.',
+              ].map((p, i) => (
+                <li key={i} className="flex gap-3 text-sm">
+                  <ChevronRight size={16} className="text-[#F27D26] shrink-0 mt-0.5" />
+                  <span className="opacity-80">{p}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="text-[10px] opacity-40 italic">
+            Upload current standings CSV to see live category rankings.
+          </p>
         </div>
       </div>
 
-      {/* Transaction Log — CBS format */}
+      {/* Weekly Targets */}
+      {(faTargets.length > 0 || tradeTargets.length > 0) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* FAAB targets */}
+          {faTargets.length > 0 && (
+            <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
+              <div className="px-6 py-4 border-b border-black/5 flex justify-between items-center">
+                <h3 className="font-serif italic text-xl">
+                  FA Targets
+                  {hasFAList && <span className="ml-2 text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold not-italic">From Upload</span>}
+                </h3>
+                <Target size={16} className="opacity-30" />
+              </div>
+              <div className="divide-y divide-black/5">
+                {faTargets.map((p, i) => {
+                  const t = inferPlayerType(p.pos);
+                  const quickBid = calcBid(t, 'contributor', faabBudget, categoryStandings);
+                  return (
+                    <div key={i} className="px-6 py-3 flex justify-between items-center hover:bg-[#F8F8F8] transition-colors">
+                      <div>
+                        <p className="text-sm font-medium">{p.name}</p>
+                        <p className="text-[11px] opacity-50">{p.pos.join(',')} · {p.mlbTeam}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-mono text-sm text-[#F27D26]">${quickBid.suggested}</p>
+                        <p className="text-[10px] opacity-40">suggested bid</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Trade targets from other rosters */}
+          {tradeTargets.length > 0 && (
+            <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
+              <div className="px-6 py-4 border-b border-black/5 flex justify-between items-center">
+                <h3 className="font-serif italic text-xl">Trade Targets</h3>
+                <ArrowLeftRight size={16} className="opacity-30" />
+              </div>
+              <div className="divide-y divide-black/5">
+                {tradeTargets.map(({ player: p, team }, i) => (
+                  <div key={i} className="px-6 py-3 flex justify-between items-center hover:bg-[#F8F8F8] transition-colors">
+                    <div>
+                      <p className="text-sm font-medium">{p.name}</p>
+                      <p className="text-[11px] opacity-50">{p.pos.join(',')} · {p.mlbTeam}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs font-bold text-gray-600">{team}</p>
+                      {p.salary > 0 && <p className="text-[10px] opacity-40">${p.salary}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* No data nudge */}
+      {!hasFAList && !leagueRoster && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-4 text-sm text-amber-800 flex gap-3 items-start">
+          <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+          <div>
+            <p className="font-semibold mb-1">Upload data for smarter recommendations</p>
+            <p className="opacity-70">Go to <strong>Strategy Lab</strong> and upload the League Roster CSV to see FA targets and trade candidates. For the best bid accuracy, also upload the Available Players list from CBS.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Transaction Log */}
       {transactions && transactions.length > 0 && (
         <TransactionLog transactions={transactions} />
       )}
 
-      {/* FAAB Bid Log — legacy format */}
+      {/* Legacy FAAB Bid Log */}
       {parsedFaab && parsedFaab.length > 0 && !transactions && (
         <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
           <div className="px-6 py-4 border-b border-black/5">
             <h3 className="font-serif italic text-xl">FAAB Bid Log <span className="text-sm opacity-40 font-sans not-italic">({parsedFaab.length})</span></h3>
           </div>
           <div className="grid grid-cols-[1.5fr_0.8fr_1fr_0.6fr_0.6fr] gap-2 px-6 py-2 bg-[#F8F8F8] border-b border-black/10 text-[10px]">
-            <span className="col-header">Player</span>
-            <span className="col-header">Date</span>
-            <span className="col-header">Team</span>
-            <span className="col-header">Bid</span>
-            <span className="col-header">Result</span>
+            <span>Player</span><span>Date</span><span>Team</span><span>Bid</span><span>Result</span>
           </div>
           <div className="max-h-80 overflow-y-auto">
             {parsedFaab.slice(0, 50).map((entry, i) => (
@@ -846,14 +1061,30 @@ function FAABView({
                 <span className="text-xs opacity-50 font-mono">{entry.date}</span>
                 <span className="text-xs opacity-70">{entry.team}</span>
                 <span className="font-mono text-sm">${entry.bid}</span>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit ${
-                  entry.result === 'Won' ? 'text-green-700 bg-green-50' : 'text-gray-500 bg-gray-50'
-                }`}>{entry.result}</span>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit ${entry.result === 'Won' ? 'text-green-700 bg-green-50' : 'text-gray-500 bg-gray-50'}`}>{entry.result}</span>
               </div>
             ))}
           </div>
         </div>
       )}
+
+      {/* Data freshness footer */}
+      <div className="border-t border-black/5 pt-4 flex flex-wrap gap-x-6 gap-y-1">
+        <p className="text-[10px] uppercase tracking-widest opacity-30 w-full mb-1">Data last updated</p>
+        {tsEntries.length === 0 ? (
+          <p className="text-[10px] opacity-40 italic">No data loaded yet — upload files in Strategy Lab.</p>
+        ) : (
+          tsEntries.map(([type, iso]) => (
+            <span key={type} className="text-[10px] opacity-50">
+              <span className="font-semibold capitalize">{type === 'leagueroster' ? 'Rosters' : type === 'freeagents' ? 'FA List' : type.charAt(0).toUpperCase() + type.slice(1)}:</span>{' '}
+              {fmtTs(iso)}
+            </span>
+          ))
+        )}
+        <span className="text-[10px] opacity-30 ml-auto italic">
+          Waivers run Sun · Wed · Fri
+        </span>
+      </div>
     </motion.div>
   );
 }
@@ -1303,9 +1534,10 @@ interface StagedFile {
   confidence: 'high' | 'low';
 }
 
-const DATA_TYPES: Exclude<DataType, 'unknown'>[] = ['leagueroster', 'roster', 'standings', 'transactions', 'faab', 'statcast', 'stuff'];
+const DATA_TYPES: Exclude<DataType, 'unknown'>[] = ['leagueroster', 'freeagents', 'roster', 'standings', 'transactions', 'faab', 'statcast', 'stuff'];
 const TYPE_LABELS: Record<DataType, string> = {
   leagueroster: 'League Rosters (All Teams)',
+  freeagents: 'Available Players (FA List)',
   roster: 'My Roster',
   standings: 'Standings',
   transactions: 'Transaction Log',
@@ -1323,7 +1555,8 @@ function StrategyLabView({
   parsedFaab,
   parsedStatcast,
   parsedStuff,
-  leagueDetails
+  leagueDetails,
+  freeAgentsCount,
 }: {
   onDataLoaded: (type: DataType, rawData: any[], csvText: string) => void;
   onResetData: () => void;
@@ -1333,6 +1566,7 @@ function StrategyLabView({
   parsedStatcast: any[] | null;
   parsedStuff: any[] | null;
   leagueDetails: LeagueDetails | null;
+  freeAgentsCount: number;
   key?: any;
 }) {
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
@@ -1424,10 +1658,10 @@ function StrategyLabView({
         {[
           { label: 'Roster', active: !!parsedRoster },
           { label: 'Standings', active: !!parsedStandings },
+          { label: 'FA List', active: freeAgentsCount > 0 },
           { label: 'FAAB Logs', active: !!parsedFaab },
           { label: 'Statcast', active: !!parsedStatcast },
           { label: 'Stuff+', active: !!parsedStuff },
-          { label: 'League Details', active: !!leagueDetails },
         ].map(({ label, active }) => (
           <div key={label} className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${active ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-yellow-500 opacity-50'}`} />
@@ -1437,7 +1671,7 @@ function StrategyLabView({
         ))}
         <div className="ml-auto flex items-center gap-4">
           <span className="text-[10px] opacity-40 italic">*Strategy engine prioritizes live CSV data over mock projections.</span>
-          {(parsedRoster || parsedStandings || parsedFaab || parsedStatcast || parsedStuff) && (
+          {(parsedRoster || parsedStandings || parsedFaab || parsedStatcast || parsedStuff || freeAgentsCount > 0) && (
             <button onClick={onResetData} className="text-[10px] uppercase font-bold tracking-widest text-red-400 hover:text-red-300 transition-colors">
               Reset Data
             </button>

@@ -2,7 +2,7 @@ import Papa from 'papaparse';
 import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry, TransactionType } from '../types';
 import { TEAM_ABBREV } from '../constants';
 
-export type DataType = 'roster' | 'standings' | 'faab' | 'transactions' | 'statcast' | 'stuff' | 'leagueroster' | 'unknown';
+export type DataType = 'roster' | 'standings' | 'faab' | 'transactions' | 'statcast' | 'stuff' | 'leagueroster' | 'freeagents' | 'unknown';
 
 /**
  * Detects the data type by inspecting CSV column headers — filename-independent.
@@ -11,6 +11,12 @@ export function detectDataType(csvText: string): { type: DataType; rowCount: num
   // CBS multi-team league roster: contains " Batters" section headers
   if (csvText.includes(' Batters\n') || csvText.includes(' Batters\r')) {
     return { type: 'leagueroster', rowCount: csvText.split('\n').length, confidence: 'high' };
+  }
+
+  // CBS free agent / available players list
+  if (csvText.includes('Available Batters') || csvText.includes('Available Pitchers') ||
+      csvText.includes('FA Batters') || csvText.includes('FA Pitchers')) {
+    return { type: 'freeagents', rowCount: csvText.split('\n').length, confidence: 'high' };
   }
 
   const lines = csvText.trim().split('\n').filter(l => l.trim());
@@ -476,4 +482,39 @@ export function parseCategoryStandings(
   flush();
 
   return results;
+}
+
+/**
+ * Parses a CBS "Available Players" / free agent export CSV.
+ * Handles the same player-row format as parseLeagueRoster but without team section headers.
+ * Skips any section header rows (e.g. "Available Batters", "Available Pitchers").
+ */
+export function parseFreeAgents(csvText: string): LeaguePlayer[] {
+  const POSITIONS = new Set(['C','1B','2B','3B','SS','MI','CI','OF','DH','SP','RP','P']);
+  const POS_RE = /\s+((?:C|1B|2B|3B|SS|MI|CI|OF|DH|SP|RP|P)(?:,(?:C|1B|2B|3B|SS|MI|CI|OF|DH|SP|RP|P))*)$/;
+
+  const result: LeaguePlayer[] = [];
+  const parsed = Papa.parse(csvText, { header: false, skipEmptyLines: false, dynamicTyping: false });
+  const rows = parsed.data as string[][];
+
+  for (const row of rows) {
+    const firstVal = (row[0] || '').trim();
+    if (!POSITIONS.has(firstVal)) continue;
+
+    const playerRaw = String(row[1] || '').trim();
+    if (!playerRaw) continue;
+
+    const pipeIdx = playerRaw.indexOf(' | ');
+    const mlbTeam = pipeIdx >= 0 ? playerRaw.slice(pipeIdx + 3).trim() : '';
+    const nameAndPos = pipeIdx >= 0 ? playerRaw.slice(0, pipeIdx) : playerRaw;
+    const posMatch = nameAndPos.match(POS_RE);
+    const name = (posMatch ? nameAndPos.slice(0, posMatch.index) : nameAndPos).trim();
+    const pos = posMatch ? posMatch[1].split(',') : [firstVal];
+
+    if (!name || name.length < 2 || name === 'Pos' || name === 'Players') continue;
+
+    result.push({ name, pos, mlbTeam, salary: 0, contract: 'N', status: 'active' });
+  }
+
+  return result;
 }
