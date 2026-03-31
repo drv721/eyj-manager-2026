@@ -395,6 +395,19 @@ export function parseLeagueRoster(csvText: string): Record<string, LeaguePlayer[
   return result;
 }
 
+// Normalize CBS-exported category names to internal names
+const CBS_CAT_MAP: Record<string, string> = {
+  'Saves': 'S', 'SV': 'S', 'SVS': 'S',
+  'Innings': 'INN', 'IP': 'INN', 'Inn': 'INN', 'Innings Pitched': 'INN',
+  'Strikeouts': 'K', 'SO': 'K',
+  'Stolen Bases': 'SB',
+  'Home Runs': 'HR',
+  'Runs Batted In': 'RBI',
+  'On-Base Pct': 'OBP', 'On Base Pct': 'OBP', 'On Base %': 'OBP', 'On-Base %': 'OBP',
+  'Earned Run Avg': 'ERA', 'Earned Run Average': 'ERA',
+  'Walks+Hits/IP': 'WHIP', 'Walks + Hits / IP': 'WHIP', 'BB+H/IP': 'WHIP',
+};
+
 /**
  * Parses a CBS-style "overall standings" CSV that contains multiple per-category sub-tables.
  * Format expected:
@@ -413,7 +426,7 @@ export function parseLeagueRoster(csvText: string): Record<string, LeaguePlayer[
  */
 export function parseCategoryStandings(
   csvText: string,
-  myTeamName = 'EYJ'
+  myTeamIdentifiers: string[] = ['EYJ', 'EffYouJobu', 'Eff You Jobu', 'effyoujobu']
 ): LiveCategoryStanding[] {
   const lines = csvText.split('\n');
   const results: LiveCategoryStanding[] = [];
@@ -427,7 +440,7 @@ export function parseCategoryStandings(
 
     const byPts = [...currentRows].sort((a, b) => b.pts - a.pts);
     const myRow = currentRows.find(r =>
-      r.team.toLowerCase().includes(myTeamName.toLowerCase())
+      myTeamIdentifiers.some(id => r.team.toLowerCase().includes(id.toLowerCase()))
     );
     const myRank = myRow ? byPts.findIndex(r => r.team === myRow.team) + 1 : -1;
     const leaderPts = byPts[0]?.pts ?? 0;
@@ -461,8 +474,10 @@ export function parseCategoryStandings(
     if (line.toLowerCase().startsWith('team,')) {
       flush();
       const parts = line.split(',');
-      const cat = parts[1]?.trim();
-      if (cat && cat !== 'Pts' && cat !== 'Dif') currentCat = cat;
+      const rawCat = parts[1]?.trim();
+      if (rawCat && rawCat !== 'Pts' && rawCat !== 'Dif') {
+        currentCat = CBS_CAT_MAP[rawCat] ?? rawCat;
+      }
       continue;
     }
 

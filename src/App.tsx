@@ -7,7 +7,6 @@ import {
   DollarSign,
   AlertTriangle,
   ChevronRight,
-  Info,
   History,
   Target,
   Zap,
@@ -28,7 +27,6 @@ import {
   SGP_DENOMINATORS,
   ADVANCED_METRICS,
   SGP_HEATMAP,
-  OWNER_BEHAVIORS,
   KEEPER_PROJECTIONS,
   TEAM_ABBREV,
   ABBREV_TO_FULLNAME,
@@ -54,7 +52,7 @@ import {
 } from './services/dataService';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'roster' | 'keepers' | 'faab' | 'trades' | 'analytics' | 'owners' | 'strategy'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'roster' | 'keepers' | 'faab' | 'trades' | 'analytics' | 'data' | 'strategy'>('dashboard');
   const [parsedRoster, setParsedRoster] = useState<Player[] | null>(null);
   const [parsedStandings, setParsedStandings] = useState<HistoricalStanding[] | null>(null);
   const [parsedFaab, setParsedFaab] = useState<FaabEntry[] | null>(null);
@@ -224,11 +222,11 @@ export default function App() {
             icon={<TrendingUp size={18} />} 
             label="Analytics" 
           />
-          <NavItem 
-            active={activeTab === 'owners'} 
-            onClick={() => setActiveTab('owners')} 
-            icon={<Info size={18} />} 
-            label="Owner Profiles" 
+          <NavItem
+            active={activeTab === 'data'}
+            onClick={() => setActiveTab('data')}
+            icon={<Database size={18} />}
+            label="Data"
           />
         </div>
 
@@ -239,7 +237,11 @@ export default function App() {
           </div>
           <div className="flex justify-between items-center">
             <span className="text-[10px] uppercase opacity-50">Salary Cap</span>
-            <span className="font-mono text-lg">${(parsedLeagueDetails?.salaryCap ?? 260) - 1} / ${parsedLeagueDetails?.salaryCap ?? 260}</span>
+            <span className="font-mono text-lg">
+              ${((parsedRoster && parsedRoster.length > 0) ? parsedRoster : INITIAL_ROSTER)
+                  .filter(p => !p.isMinor)
+                  .reduce((sum, p) => sum + p.salary, 0)} / $260
+            </span>
           </div>
         </div>
       </nav>
@@ -291,24 +293,34 @@ export default function App() {
           {activeTab === 'strategy' && (
             <StrategyLabView
               key="strategy"
-              onDataLoaded={applyParsedData}
-              onResetData={handleResetData}
               parsedRoster={parsedRoster}
-              parsedStandings={parsedStandings}
-              parsedFaab={parsedFaab}
               parsedStatcast={parsedStatcast}
               parsedStuff={parsedStuff}
-              leagueDetails={parsedLeagueDetails}
-              freeAgentsCount={freeAgents.length}
             />
           )}
           {activeTab === 'analytics' && (
             <AnalyticsView
               key="analytics"
               categoryStandings={parsedCategoryStandings}
+              faabBudget={faabBudget}
             />
           )}
-          {activeTab === 'owners' && <OwnersView key="owners" />}
+          {activeTab === 'data' && (
+            <DataView
+              key="data"
+              onDataLoaded={applyParsedData}
+              onResetData={handleResetData}
+              dataTimestamps={dataTimestamps}
+              parsedRoster={parsedRoster}
+              parsedStandings={parsedStandings}
+              parsedFaab={parsedFaab}
+              parsedStatcast={parsedStatcast}
+              parsedStuff={parsedStuff}
+              leagueRoster={leagueRoster}
+              freeAgents={freeAgents}
+              transactions={transactions}
+            />
+          )}
         </AnimatePresence>
       </main>
     </div>
@@ -1548,99 +1560,21 @@ const TYPE_LABELS: Record<DataType, string> = {
 };
 
 function StrategyLabView({
-  onDataLoaded,
-  onResetData,
   parsedRoster,
-  parsedStandings,
-  parsedFaab,
   parsedStatcast,
   parsedStuff,
-  leagueDetails,
-  freeAgentsCount,
 }: {
-  onDataLoaded: (type: DataType, rawData: any[], csvText: string) => void;
-  onResetData: () => void;
   parsedRoster: Player[] | null;
-  parsedStandings: HistoricalStanding[] | null;
-  parsedFaab: FaabEntry[] | null;
   parsedStatcast: any[] | null;
   parsedStuff: any[] | null;
-  leagueDetails: LeagueDetails | null;
-  freeAgentsCount: number;
   key?: any;
 }) {
-  const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
-  const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set());
-  const [dragOver, setDragOver] = useState(false);
-  const [showPasteModal, setShowPasteModal] = useState(false);
-  const [pasteType, setPasteType] = useState<Exclude<DataType, 'unknown'>>('stuff');
-  const [pasteContent, setPasteContent] = useState('');
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-
   const topEV = parsedStatcast ? [...parsedStatcast].sort((a, b) => (b.ev || 0) - (a.ev || 0)).slice(0, 3) : [];
   const topBarrel = parsedStatcast ? [...parsedStatcast].sort((a, b) => (b.barrelRate || 0) - (a.barrelRate || 0)).slice(0, 3) : [];
   const topStuff = parsedStuff ? [...parsedStuff].sort((a, b) => (b.stuffPlus || 0) - (a.stuffPlus || 0)).slice(0, 3) : [];
 
   const effectiveRoster = parsedRoster && parsedRoster.length > 0 ? parsedRoster : INITIAL_ROSTER;
   const lastN = (name: string) => name.toLowerCase().split(' ').slice(-1)[0].replace(/[^a-z]/g, '');
-
-  const stageFiles = async (files: FileList | File[]) => {
-    const newStaged: StagedFile[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      if (!file.name.match(/\.(csv|txt)$/i)) continue;
-      const csvText = await file.text();
-      const { type, rowCount, confidence } = detectDataType(csvText);
-      newStaged.push({
-        id: `${Date.now()}-${i}`,
-        name: file.name,
-        csvText,
-        rawFile: file,
-        detectedType: type,
-        assignedType: type === 'unknown' ? 'stuff' : type,
-        rowCount,
-        confidence,
-      });
-    }
-    setStagedFiles(prev => [...prev, ...newStaged]);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.length) stageFiles(e.target.files);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    if (e.dataTransfer.files.length) stageFiles(e.dataTransfer.files);
-  };
-
-  const loadStagedFile = async (staged: StagedFile) => {
-    setLoadingIds(prev => new Set(prev).add(staged.id));
-    try {
-      const rawData = await parseCSVText(staged.csvText);
-      onDataLoaded(staged.assignedType, rawData, staged.csvText);
-      setStagedFiles(prev => prev.filter(f => f.id !== staged.id));
-    } catch (err) {
-      console.error('Load failed', err);
-    } finally {
-      setLoadingIds(prev => { const s = new Set(prev); s.delete(staged.id); return s; });
-    }
-  };
-
-  const handlePasteSubmit = async () => {
-    if (!pasteContent.trim()) return;
-    try {
-      const rawData = await parseCSVText(pasteContent);
-      onDataLoaded(pasteType, rawData, pasteContent);
-    } catch (err) {
-      console.error('Paste failed', err);
-    }
-    setShowPasteModal(false);
-    setPasteContent('');
-  };
 
   return (
     <motion.div
@@ -1652,32 +1586,6 @@ function StrategyLabView({
         <h2 className="text-4xl font-serif italic mb-2">Strategy Lab</h2>
         <p className="text-sm opacity-60">Cap efficiency · process metrics · regression signals</p>
       </header>
-
-      {/* Data Status Bar */}
-      <div className="bg-white/5 p-4 rounded-xl border border-white/10 flex flex-wrap gap-6 items-center">
-        {[
-          { label: 'Roster', active: !!parsedRoster },
-          { label: 'Standings', active: !!parsedStandings },
-          { label: 'FA List', active: freeAgentsCount > 0 },
-          { label: 'FAAB Logs', active: !!parsedFaab },
-          { label: 'Statcast', active: !!parsedStatcast },
-          { label: 'Stuff+', active: !!parsedStuff },
-        ].map(({ label, active }) => (
-          <div key={label} className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${active ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-yellow-500 opacity-50'}`} />
-            <span className="text-[10px] uppercase font-bold tracking-widest opacity-70">{label}:</span>
-            <span className="text-[10px] font-mono">{active ? 'Live' : 'Mock'}</span>
-          </div>
-        ))}
-        <div className="ml-auto flex items-center gap-4">
-          <span className="text-[10px] opacity-40 italic">*Strategy engine prioritizes live CSV data over mock projections.</span>
-          {(parsedRoster || parsedStandings || parsedFaab || parsedStatcast || parsedStuff || freeAgentsCount > 0) && (
-            <button onClick={onResetData} className="text-[10px] uppercase font-bold tracking-widest text-red-400 hover:text-red-300 transition-colors">
-              Reset Data
-            </button>
-          )}
-        </div>
-      </div>
 
       <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold -mb-4">Cap &amp; Market Efficiency</p>
 
@@ -1869,177 +1777,6 @@ function StrategyLabView({
         </>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Market Efficiency */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
-          <h3 className="font-serif italic text-xl mb-6">Market Efficiency (Owner Behavior)</h3>
-          <div className="flex flex-col gap-4">
-            {OWNER_BEHAVIORS.map((owner, i) => (
-              <div key={`${owner.team}-${i}`} className="p-4 rounded-xl bg-[#F8F8F8] flex justify-between items-center">
-                <div>
-                  <p className="text-sm font-bold">{owner.team}</p>
-                  <p className="text-[10px] opacity-60">Targets: {owner.preferredCategories.join(', ')}</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-[10px] uppercase opacity-50">Aggression</p>
-                  <p className={`font-mono font-bold ${owner.aggression > 80 ? 'text-red-500' : 'text-green-600'}`}>
-                    {owner.aggression}%
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Data Import */}
-        <div className="bg-[#F27D26] text-white p-6 rounded-2xl shadow-lg">
-          <div className="flex items-center gap-3 mb-3">
-            <Database size={24} />
-            <h3 className="font-serif italic text-xl">Import Data</h3>
-          </div>
-          <p className="text-sm mb-4 opacity-90">
-            Drop any CSV — type is detected from column headers, not filename.
-          </p>
-
-          <input
-            type="file"
-            multiple
-            className="hidden"
-            ref={fileInputRef}
-            onChange={handleFileChange}
-            accept=".csv,.txt"
-          />
-
-          {/* Drop Zone */}
-          <div
-            onClick={() => fileInputRef.current?.click()}
-            onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={handleDrop}
-            className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all ${dragOver ? 'border-white bg-white/20' : 'border-white/30 hover:border-white/60 hover:bg-white/5'}`}
-          >
-            <Database size={22} className="mx-auto mb-2 opacity-50" />
-            <p className="text-xs font-bold uppercase tracking-widest">Drop CSVs here</p>
-            <p className="text-[10px] opacity-60 mt-1">or click to browse — any filename works</p>
-          </div>
-
-          {/* Staged Files */}
-          {stagedFiles.length > 0 && (
-            <div className="mt-4 flex flex-col gap-2">
-              <div className="flex justify-between items-center mb-1">
-                <p className="text-[10px] uppercase font-bold tracking-widest opacity-70">Ready to Import</p>
-                <button
-                  onClick={() => stagedFiles.forEach(f => loadStagedFile(f))}
-                  className="text-[10px] bg-white text-[#F27D26] font-bold px-3 py-1 rounded uppercase tracking-widest hover:bg-white/90 transition-colors"
-                >
-                  Load All ({stagedFiles.length})
-                </button>
-              </div>
-              {stagedFiles.map(staged => (
-                <div key={staged.id} className="bg-black/20 rounded-lg p-3 flex items-center gap-2">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-bold truncate">{staged.name}</p>
-                    <p className="text-[10px] opacity-50">{staged.rowCount} rows</p>
-                  </div>
-                  {staged.confidence === 'low' && (
-                    <span className="text-yellow-300 text-[10px] font-bold shrink-0" title="Low confidence — please verify type">!</span>
-                  )}
-                  <select
-                    value={staged.assignedType}
-                    onChange={e => setStagedFiles(prev => prev.map(f => f.id === staged.id ? { ...f, assignedType: e.target.value as DataType } : f))}
-                    className="text-[10px] bg-black/40 border border-white/20 rounded px-2 py-1 text-white font-bold shrink-0 cursor-pointer"
-                  >
-                    {DATA_TYPES.map(t => (
-                      <option key={t} value={t}>{TYPE_LABELS[t]}</option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() => loadStagedFile(staged)}
-                    disabled={loadingIds.has(staged.id)}
-                    className="text-[10px] bg-white/20 hover:bg-white/30 disabled:opacity-40 rounded px-2 py-1 font-bold uppercase shrink-0 transition-colors flex items-center gap-1"
-                  >
-                    {loadingIds.has(staged.id) ? <Loader2 size={10} className="animate-spin" /> : 'Load'}
-                  </button>
-                  <button
-                    onClick={() => setStagedFiles(prev => prev.filter(f => f.id !== staged.id))}
-                    className="text-white/40 hover:text-white/80 shrink-0 transition-colors"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <button
-            onClick={() => setShowPasteModal(true)}
-            className="w-full mt-4 py-2 bg-white/10 hover:bg-white/20 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-colors"
-          >
-            Paste CSV Instead
-          </button>
-
-          {/* Data Guide */}
-          <div className="mt-6 pt-6 border-t border-white/20">
-            <p className="text-[10px] uppercase opacity-50 mb-3 tracking-widest">Data Sources</p>
-            <div className="flex flex-col gap-3 text-[10px]">
-              <div>
-                <p className="font-bold text-white/90">Baseball Savant (Statcast)</p>
-                <p className="opacity-60 leading-relaxed">Leaderboards → Statcast → Batting or Exit Velocity. Export CSV.</p>
-              </div>
-              <div>
-                <p className="font-bold text-white/90">FanGraphs (Stuff+)</p>
-                <p className="opacity-60 leading-relaxed">Leaders → Pitching → "+ Stats" preset. Export CSV.</p>
-              </div>
-              <div>
-                <p className="font-bold text-white/90">CBS / League Site</p>
-                <p className="opacity-60 leading-relaxed">Export Standings, Rosters, and Transaction History (FAAB).</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Paste Modal */}
-      {showPasteModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <motion.div
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="bg-[#141414] border border-white/20 rounded-2xl p-6 w-full max-w-lg"
-          >
-            <div className="flex justify-between items-center mb-4">
-              <h4 className="font-serif italic text-xl text-white">Paste CSV Data</h4>
-              <button onClick={() => setShowPasteModal(false)} className="text-white/50 hover:text-white">
-                <X size={20} />
-              </button>
-            </div>
-            <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
-              {DATA_TYPES.map(type => (
-                <button
-                  key={type}
-                  onClick={() => setPasteType(type)}
-                  className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all shrink-0 ${pasteType === type ? 'bg-[#F27D26] text-white' : 'bg-white/10 text-white/50 hover:bg-white/20'}`}
-                >
-                  {TYPE_LABELS[type]}
-                </button>
-              ))}
-            </div>
-            <textarea
-              value={pasteContent}
-              onChange={e => setPasteContent(e.target.value)}
-              placeholder="Paste your CSV data here (including headers)..."
-              className="w-full h-64 bg-black/50 border border-white/10 rounded-xl p-4 text-xs font-mono text-white/80 focus:outline-none focus:border-[#F27D26] mb-4 resize-none"
-            />
-            <button
-              onClick={handlePasteSubmit}
-              disabled={!pasteContent.trim()}
-              className="w-full py-3 bg-[#F27D26] hover:bg-[#d96a1d] disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-xs font-bold uppercase tracking-widest text-white transition-colors"
-            >
-              Load Data
-            </button>
-          </motion.div>
-        </div>
-      )}
     </motion.div>
   );
 }
@@ -2246,7 +1983,7 @@ function EditableValue({ value, onChange }: { value: number; onChange: (v: numbe
   );
 }
 
-function AnalyticsView({ categoryStandings }: { categoryStandings: LiveCategoryStanding[] | null; key?: any }) {
+function AnalyticsView({ categoryStandings, faabBudget }: { categoryStandings: LiveCategoryStanding[] | null; faabBudget: number; key?: any }) {
   // Manual/fallback mode: user can enter their own rank per category
   const [manualRanks, setManualRanks] = useState<Record<string, number>>(
     Object.fromEntries(CATEGORY_PROJECTIONS.map(p => [p.cat, 6]))
@@ -2372,18 +2109,389 @@ function AnalyticsView({ categoryStandings }: { categoryStandings: LiveCategoryS
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
-          <h3 className="font-serif italic text-xl mb-4">Auction Budgets</h3>
-          <div className="flex flex-col gap-1">
-            {TEAM_BUDGETS.sort((a, b) => b.budget - a.budget).map((team, i) => (
-              <div key={`${team.team}-${i}`} className="flex justify-between items-center px-3 py-2 hover:bg-[#F8F8F8] rounded transition-colors">
-                <span className={`text-sm ${team.team === 'EYJ' ? 'font-bold text-[#F27D26]' : ''}`}>{team.team}</span>
-                <span className="font-mono text-sm">${team.budget}</span>
-              </div>
-            ))}
+        <div className="bg-[#141414] text-white p-6 rounded-2xl shadow-lg">
+          <h3 className="font-serif italic text-xl mb-1">FAAB Budget</h3>
+          <p className="text-[10px] uppercase opacity-50 mb-5 tracking-widest">EYJ · $120 Starting</p>
+          <div className="flex items-end gap-3 mb-4">
+            <span className="font-mono text-5xl font-bold text-[#F27D26]">${faabBudget}</span>
+            <span className="text-sm opacity-50 mb-1">remaining</span>
+          </div>
+          <div className="h-2 bg-white/10 rounded-full overflow-hidden mb-3">
+            <div
+              className="h-full bg-[#F27D26] rounded-full transition-all"
+              style={{ width: `${(faabBudget / 120) * 100}%` }}
+            />
+          </div>
+          <div className="flex justify-between text-[10px] opacity-50">
+            <span>${120 - faabBudget} spent</span>
+            <span>$120 total</span>
+          </div>
+          <div className="mt-6 pt-5 border-t border-white/10">
+            <p className="text-[10px] uppercase opacity-50 mb-3 tracking-widest">League Draft Budgets</p>
+            <div className="flex flex-col gap-1">
+              {TEAM_BUDGETS.sort((a, b) => b.budget - a.budget).map((team, i) => (
+                <div key={`${team.team}-${i}`} className="flex justify-between items-center px-2 py-1.5 hover:bg-white/5 rounded transition-colors">
+                  <span className={`text-xs ${team.team === 'EYJ' ? 'font-bold text-[#F27D26]' : 'opacity-70'}`}>{team.team}</span>
+                  <span className="font-mono text-xs opacity-70">${team.budget}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
+    </motion.div>
+  );
+}
+
+// ─── Data View ───────────────────────────────────────────────────────────────
+
+function DataView({
+  onDataLoaded,
+  onResetData,
+  dataTimestamps,
+  parsedRoster,
+  parsedStandings,
+  parsedFaab,
+  parsedStatcast,
+  parsedStuff,
+  leagueRoster,
+  freeAgents,
+  transactions,
+}: {
+  onDataLoaded: (type: DataType, rawData: any[], csvText: string) => void;
+  onResetData: () => void;
+  dataTimestamps: Record<string, string>;
+  parsedRoster: Player[] | null;
+  parsedStandings: HistoricalStanding[] | null;
+  parsedFaab: FaabEntry[] | null;
+  parsedStatcast: any[] | null;
+  parsedStuff: any[] | null;
+  leagueRoster: Record<string, LeaguePlayer[]> | null;
+  freeAgents: LeaguePlayer[];
+  transactions: TransactionEntry[] | null;
+  key?: any;
+}) {
+  const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
+  const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set());
+  const [dragOver, setDragOver] = useState(false);
+  const [showPasteModal, setShowPasteModal] = useState(false);
+  const [pasteType, setPasteType] = useState<Exclude<DataType, 'unknown'>>('leagueroster');
+  const [pasteContent, setPasteContent] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const stageFiles = async (files: FileList | File[]) => {
+    const newStaged: StagedFile[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!file.name.match(/\.(csv|txt)$/i)) continue;
+      const csvText = await file.text();
+      const { type, rowCount, confidence } = detectDataType(csvText);
+      newStaged.push({
+        id: `${Date.now()}-${i}`,
+        name: file.name,
+        csvText,
+        rawFile: file,
+        detectedType: type,
+        assignedType: type === 'unknown' ? 'leagueroster' : type,
+        rowCount,
+        confidence,
+      });
+    }
+    setStagedFiles(prev => [...prev, ...newStaged]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.length) stageFiles(e.target.files);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (e.dataTransfer.files.length) stageFiles(e.dataTransfer.files);
+  };
+
+  const loadStagedFile = async (staged: StagedFile) => {
+    setLoadingIds(prev => new Set(prev).add(staged.id));
+    try {
+      const rawData = await parseCSVText(staged.csvText);
+      onDataLoaded(staged.assignedType, rawData, staged.csvText);
+      setStagedFiles(prev => prev.filter(f => f.id !== staged.id));
+    } catch (err) {
+      console.error('Load failed', err);
+    } finally {
+      setLoadingIds(prev => { const s = new Set(prev); s.delete(staged.id); return s; });
+    }
+  };
+
+  const handlePasteSubmit = async () => {
+    if (!pasteContent.trim()) return;
+    try {
+      const rawData = await parseCSVText(pasteContent);
+      onDataLoaded(pasteType, rawData, pasteContent);
+    } catch (err) {
+      console.error('Paste failed', err);
+    }
+    setShowPasteModal(false);
+    setPasteContent('');
+  };
+
+  const hasAnyData = !!(parsedRoster || parsedStandings || parsedFaab || parsedStatcast || parsedStuff || leagueRoster || freeAgents.length > 0 || transactions);
+
+  const dataStatus = [
+    { key: 'leagueroster', label: 'League Rosters', active: !!leagueRoster, count: leagueRoster ? `${Object.keys(leagueRoster).length} teams` : null },
+    { key: 'freeagents',   label: 'Available Players', active: freeAgents.length > 0, count: freeAgents.length > 0 ? `${freeAgents.length} players` : null },
+    { key: 'standings',    label: 'Standings',      active: !!parsedStandings, count: null },
+    { key: 'transactions', label: 'Transactions',   active: !!transactions, count: transactions ? `${transactions.length} entries` : null },
+    { key: 'statcast',     label: 'Statcast',       active: !!parsedStatcast, count: parsedStatcast ? `${parsedStatcast.length} players` : null },
+    { key: 'stuff',        label: 'Stuff+',         active: !!parsedStuff, count: parsedStuff ? `${parsedStuff.length} pitchers` : null },
+  ] as const;
+
+  const CBS_SOURCES = [
+    {
+      type: 'leagueroster' as DataType,
+      label: 'All-Team Rosters',
+      desc: 'From CBS: My Team → Roster → Export full league. Contains all 12 teams' rosters, salaries, contract years.',
+      icon: '👥',
+    },
+    {
+      type: 'freeagents' as DataType,
+      label: 'Available Players (FA List)',
+      desc: 'From CBS: Players → Available Players → Export. Required for FAAB bid autocomplete and target lists.',
+      icon: '🔍',
+    },
+    {
+      type: 'standings' as DataType,
+      label: 'Standings / Overall CSV',
+      desc: 'From CBS: Standings → Overall → Export. Enables live category ranks and SGP gap analysis.',
+      icon: '📊',
+    },
+    {
+      type: 'transactions' as DataType,
+      label: 'Transaction Log',
+      desc: 'From CBS: Transactions → All Transactions → Export. Shows adds, drops, trades across the league.',
+      icon: '📋',
+    },
+  ];
+
+  const EXT_SOURCES = [
+    {
+      type: 'statcast' as DataType,
+      label: 'Statcast (Baseball Savant)',
+      desc: 'Leaderboards → Statcast Batting. Filter to min 100 PA. Export CSV.',
+      icon: '⚾',
+    },
+    {
+      type: 'stuff' as DataType,
+      label: 'Stuff+ / Pitching+ (FanGraphs)',
+      desc: 'Leaders → Pitching → "+ Stats" preset. Min 10 IP. Export CSV.',
+      icon: '🔥',
+    },
+  ];
+
+  const formatTs = (iso: string) => {
+    try {
+      return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    } catch { return iso; }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: 20 }}
+      animate={{ opacity: 1, x: 0 }}
+      className="flex flex-col gap-8"
+    >
+      <header className="flex justify-between items-end">
+        <div>
+          <h2 className="text-4xl font-serif italic mb-2">Data</h2>
+          <p className="text-sm opacity-60">Upload CSVs to power live analysis across all tabs</p>
+        </div>
+        {hasAnyData && (
+          <button
+            onClick={onResetData}
+            className="text-[10px] uppercase font-bold tracking-widest text-red-400 hover:text-red-300 transition-colors"
+          >
+            Reset All Data
+          </button>
+        )}
+      </header>
+
+      {/* Status summary */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        {dataStatus.map(({ key, label, active, count }) => (
+          <div key={key} className={`p-4 rounded-xl border flex flex-col gap-2 ${active ? 'bg-green-50 border-green-200' : 'bg-white border-black/5'}`}>
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full shrink-0 ${active ? 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]' : 'bg-black/15'}`} />
+              <span className="text-[10px] uppercase font-bold tracking-widest opacity-60">{active ? 'Live' : 'None'}</span>
+            </div>
+            <p className="text-xs font-medium leading-tight">{label}</p>
+            {active && count && <p className="text-[10px] opacity-50 font-mono">{count}</p>}
+            {active && dataTimestamps[key] && (
+              <p className="text-[10px] opacity-40 font-mono">{formatTs(dataTimestamps[key])}</p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Upload zone */}
+      <div className="bg-[#F27D26] text-white p-6 rounded-2xl shadow-lg">
+        <div className="flex items-center gap-3 mb-3">
+          <Database size={22} />
+          <h3 className="font-serif italic text-xl">Import Data</h3>
+        </div>
+        <p className="text-sm mb-5 opacity-90">Drop any CSV — type is auto-detected from column headers, not filename. You can also override the type manually.</p>
+
+        <input type="file" multiple className="hidden" ref={fileInputRef} onChange={handleFileChange} accept=".csv,.txt" />
+
+        <div
+          onClick={() => fileInputRef.current?.click()}
+          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+          className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${dragOver ? 'border-white bg-white/20' : 'border-white/30 hover:border-white/60 hover:bg-white/5'}`}
+        >
+          <Database size={22} className="mx-auto mb-2 opacity-50" />
+          <p className="text-xs font-bold uppercase tracking-widest">Drop CSVs here or click to browse</p>
+          <p className="text-[10px] opacity-60 mt-1">Accepts .csv or .txt · any filename works</p>
+        </div>
+
+        {stagedFiles.length > 0 && (
+          <div className="mt-4 flex flex-col gap-2">
+            <div className="flex justify-between items-center mb-1">
+              <p className="text-[10px] uppercase font-bold tracking-widest opacity-70">Ready to Import</p>
+              <button
+                onClick={() => stagedFiles.forEach(f => loadStagedFile(f))}
+                className="text-[10px] bg-white text-[#F27D26] font-bold px-3 py-1 rounded uppercase tracking-widest hover:bg-white/90 transition-colors"
+              >
+                Load All ({stagedFiles.length})
+              </button>
+            </div>
+            {stagedFiles.map(staged => (
+              <div key={staged.id} className="bg-black/20 rounded-lg p-3 flex items-center gap-2">
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-bold truncate">{staged.name}</p>
+                  <p className="text-[10px] opacity-50">{staged.rowCount} rows · {staged.confidence === 'low' ? '⚠ verify type' : 'auto-detected'}</p>
+                </div>
+                <select
+                  value={staged.assignedType}
+                  onChange={e => setStagedFiles(prev => prev.map(f => f.id === staged.id ? { ...f, assignedType: e.target.value as DataType } : f))}
+                  className="text-[10px] bg-black/40 border border-white/20 rounded px-2 py-1 text-white font-bold shrink-0 cursor-pointer"
+                >
+                  {DATA_TYPES.map(t => (
+                    <option key={t} value={t}>{TYPE_LABELS[t]}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => loadStagedFile(staged)}
+                  disabled={loadingIds.has(staged.id)}
+                  className="text-[10px] bg-white/20 hover:bg-white/30 disabled:opacity-40 rounded px-2 py-1 font-bold uppercase shrink-0 transition-colors flex items-center gap-1"
+                >
+                  {loadingIds.has(staged.id) ? <Loader2 size={10} className="animate-spin" /> : 'Load'}
+                </button>
+                <button
+                  onClick={() => setStagedFiles(prev => prev.filter(f => f.id !== staged.id))}
+                  className="text-white/40 hover:text-white/80 shrink-0 transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button
+          onClick={() => setShowPasteModal(true)}
+          className="w-full mt-4 py-2 bg-white/10 hover:bg-white/20 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-colors"
+        >
+          Paste CSV Instead
+        </button>
+      </div>
+
+      {/* CBS Sources */}
+      <div>
+        <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold mb-4">From CBS Sports</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {CBS_SOURCES.map(src => {
+            const loaded = dataStatus.find(d => d.key === src.type)?.active;
+            return (
+              <div key={src.type} className={`bg-white rounded-2xl border p-5 flex gap-4 ${loaded ? 'border-green-200' : 'border-black/5'}`}>
+                <span className="text-2xl shrink-0">{src.icon}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <p className="text-sm font-bold">{src.label}</p>
+                    {loaded && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">Loaded</span>}
+                  </div>
+                  <p className="text-xs opacity-60 leading-relaxed">{src.desc}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* External Sources */}
+      <div>
+        <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold mb-4">External Sources</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {EXT_SOURCES.map(src => {
+            const loaded = dataStatus.find(d => d.key === src.type)?.active;
+            return (
+              <div key={src.type} className={`bg-white rounded-2xl border p-5 flex gap-4 ${loaded ? 'border-green-200' : 'border-black/5'}`}>
+                <span className="text-2xl shrink-0">{src.icon}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <p className="text-sm font-bold">{src.label}</p>
+                    {loaded && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">Loaded</span>}
+                  </div>
+                  <p className="text-xs opacity-60 leading-relaxed">{src.desc}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Paste Modal */}
+      {showPasteModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-[#141414] border border-white/20 rounded-2xl p-6 w-full max-w-lg"
+          >
+            <div className="flex justify-between items-center mb-4">
+              <h4 className="font-serif italic text-xl text-white">Paste CSV Data</h4>
+              <button onClick={() => setShowPasteModal(false)} className="text-white/50 hover:text-white">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
+              {DATA_TYPES.map(type => (
+                <button
+                  key={type}
+                  onClick={() => setPasteType(type)}
+                  className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all shrink-0 ${pasteType === type ? 'bg-[#F27D26] text-white' : 'bg-white/10 text-white/50 hover:bg-white/20'}`}
+                >
+                  {TYPE_LABELS[type]}
+                </button>
+              ))}
+            </div>
+            <textarea
+              value={pasteContent}
+              onChange={e => setPasteContent(e.target.value)}
+              placeholder="Paste your CSV data here (including headers)..."
+              className="w-full h-64 bg-black/50 border border-white/10 rounded-xl p-4 text-xs font-mono text-white/80 focus:outline-none focus:border-[#F27D26] mb-4 resize-none"
+            />
+            <button
+              onClick={handlePasteSubmit}
+              disabled={!pasteContent.trim()}
+              className="w-full py-3 bg-[#F27D26] hover:bg-[#d96a1d] disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-xs font-bold uppercase tracking-widest text-white transition-colors"
+            >
+              Load Data
+            </button>
+          </motion.div>
+        </div>
+      )}
     </motion.div>
   );
 }
