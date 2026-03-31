@@ -2251,7 +2251,7 @@ function DataView({
     {
       type: 'leagueroster' as DataType,
       label: 'All-Team Rosters',
-      desc: 'From CBS: My Team → Roster → Export full league. Contains all 12 teams' rosters, salaries, contract years.',
+      desc: "From CBS: My Team → Roster → Export full league. Contains all 12 teams' rosters, salaries, contract years.",
       icon: '👥',
     },
     {
