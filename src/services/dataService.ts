@@ -139,13 +139,15 @@ export function extractCategoriesFromOverall(csvText: string): { batting: string
 }
 
 /**
- * Extracts roster rules from the roster overview file
+ * Extracts roster rules and FAAB budget from the roster overview file.
+ * Returns faabBudget as null if no FAB balance line is found.
  */
-export function extractRosterRulesFromRoster(csvText: string): { rules: any, salaryCap: number } {
+export function extractRosterRulesFromRoster(csvText: string): { rules: any, salaryCap: number, faabBudget: number | null } {
   const lines = csvText.split('\n');
   let rules = { active: 22, reserve: 5, injured: 3, minors: 6 };
   let salaryCap = 260; // Default
-  
+  let faabBudget: number | null = null;
+
   for (let line of lines) {
     if (line.includes('Active:') && line.includes('Reserve:') && line.includes('Salary:')) {
       // Example: Active: 22 Reserve: 5 Injured: 3 Minors: 6 Active Salary: 217.00 Total Salary: 280.00
@@ -153,18 +155,23 @@ export function extractRosterRulesFromRoster(csvText: string): { rules: any, sal
       const reserveMatch = line.match(/Reserve:\s*(\d+)/);
       const injuredMatch = line.match(/Injured:\s*(\d+)/);
       const minorsMatch = line.match(/Minors:\s*(\d+)/);
-      const totalSalaryMatch = line.match(/Total Salary:\s*([\d.]+)/);
-      
+
       if (activeMatch) rules.active = parseInt(activeMatch[1]);
       if (reserveMatch) rules.reserve = parseInt(reserveMatch[1]);
       if (injuredMatch) rules.injured = parseInt(injuredMatch[1]);
       if (minorsMatch) rules.minors = parseInt(minorsMatch[1]);
-      // If total salary is listed, maybe that's the cap or current total. 
-      // Usually cap is 260. 
+    }
+
+    // Parse FAAB / FAB budget lines
+    // Common CBS formats: "FAB Budget: 92.00", "FAB: 92", "FAAB: 92.00", "Free Agent Budget: 92.00"
+    const fabMatch = line.match(/(?:FAB(?:AB)?(?:\s+Budget)?|Free\s+Agent\s+Budget|Available\s+FAB|FAB\s+Remaining)[:\s]+([\d.]+)/i);
+    if (fabMatch) {
+      const val = parseFloat(fabMatch[1]);
+      if (!isNaN(val)) faabBudget = val;
     }
   }
-  
-  return { rules, salaryCap };
+
+  return { rules, salaryCap, faabBudget };
 }
 
 export async function fetchAndParseCSV<T>(filename: string): Promise<T[]> {

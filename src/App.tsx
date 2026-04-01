@@ -56,7 +56,14 @@ import {
 } from './services/dataService';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'manage' | 'trades' | 'analytics' | 'data' | 'strategy'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'manage' | 'trades' | 'analytics' | 'data' | 'strategy'>(() => {
+    try {
+      const t = localStorage.getItem('eyj_activeTab');
+      const valid = ['dashboard', 'manage', 'trades', 'analytics', 'data', 'strategy'];
+      if (t && valid.includes(t)) return t as any;
+    } catch {}
+    return 'dashboard';
+  });
   const [parsedRoster, setParsedRoster] = useState<Player[] | null>(null);
   const [parsedStandings, setParsedStandings] = useState<HistoricalStanding[] | null>(null);
   const [parsedFaab, setParsedFaab] = useState<FaabEntry[] | null>(null);
@@ -74,7 +81,8 @@ export default function App() {
   const applyParsedData = (type: DataType, rawData: any[], csvText: string) => {
     if (type === 'roster') {
       setParsedRoster(mapRosterData(rawData));
-      const { rules, salaryCap } = extractRosterRulesFromRoster(csvText);
+      const { rules, salaryCap, faabBudget: parsedFaabBudget } = extractRosterRulesFromRoster(csvText);
+      if (parsedFaabBudget !== null) setFaabBudget(parsedFaabBudget);
       setParsedLeagueDetails(prev => ({
         battingCategories: prev?.battingCategories || [],
         pitchingCategories: prev?.pitchingCategories || [],
@@ -158,6 +166,7 @@ export default function App() {
   useEffect(() => { if (freeAgents.length > 0) localStorage.setItem('eyj_freeagents', JSON.stringify(freeAgents)); }, [freeAgents]);
   useEffect(() => { if (Object.keys(dataTimestamps).length > 0) localStorage.setItem('eyj_timestamps', JSON.stringify(dataTimestamps)); }, [dataTimestamps]);
   useEffect(() => { localStorage.setItem('eyj_faabBudget', String(faabBudget)); }, [faabBudget]);
+  useEffect(() => { localStorage.setItem('eyj_activeTab', activeTab); }, [activeTab]);
 
   const handleResetData = () => {
     ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings','eyj_leagueroster','eyj_transactions','eyj_freeagents','eyj_timestamps'].forEach(k => localStorage.removeItem(k));
@@ -445,18 +454,24 @@ function RiskItem({ title, desc }: { title: string, desc: string }) {
 }
 
 // ─── Keeper salary escalation (per league rules) ─────────────────────────────
-function keeperNextSalary(salary: number): number {
+// $1–9 → +$1, $10–19 → +$2, $20–29 → +$3, $30–39 → +$4, etc.
+// K3 → Franchise: salary ≤$25 jumps to $30; salary $26+ → salary + $5
+function keeperNextSalary(salary: number, contract?: string): number {
   if (salary === 0) return 5; // minor league call-up cost
+  if (contract === 'K3') {
+    return salary <= 25 ? 30 : salary + 5;
+  }
   const bracket = Math.floor(salary / 10);
   return salary + (bracket + 1);
 }
 
 function keeperContractNext(contract: string): string {
+  if (contract === 'N')  return 'K1 (if kept)';
   if (contract === 'K1') return 'K2';
   if (contract === 'K2') return 'K3';
   if (contract === 'K3') return 'F (Franchise)';
-  if (contract === 'F') return 'F (Franchise)';
-  if (contract === 'M') return 'M (stays in minors)';
+  if (contract === 'F')  return 'F (Franchise)';
+  if (contract === 'M')  return 'M (stays in minors)';
   if (contract === 'M1') return 'M2';
   if (contract === 'M2') return 'K1 or FA';
   if (contract === 'M3') return 'K1';
@@ -464,10 +479,11 @@ function keeperContractNext(contract: string): string {
 }
 
 function keeperYearsLeft(contract: string): number {
+  if (contract === 'N')  return 3; // N → K1 → K2 → K3
   if (contract === 'K1') return 2; // can keep K2, K3
   if (contract === 'K2') return 1; // can keep K3 only
   if (contract === 'K3') return 0; // must franchise or lose
-  if (contract === 'F') return 99;
+  if (contract === 'F')  return 99;
   if (contract.startsWith('M')) return 99; // indefinite in minors
   return 0;
 }
@@ -501,13 +517,14 @@ function ManageView({
   const minorPlayers   = roster.filter(p => p.isMinor);
   const activeSalary   = roster.filter(p => !p.isMinor).reduce((s, p) => s + p.salary, 0);
 
+  // N-contract players are eligible to keep (as K1 next year) — included here
   const keeperEligible = roster.filter(p =>
-    p.contract.match(/^(K[123]|M[123]?|F)$/)
+    p.contract.match(/^(N|K[123]|M[123]?|F)$/)
   );
   const keeperCount = keeperEligible.filter(p => !p.isMinor || p.contract !== 'M').length;
   const totalKeeperCost = keeperEligible
     .filter(p => !p.isMinor)
-    .reduce((s, p) => s + keeperNextSalary(p.salary), 0);
+    .reduce((s, p) => s + keeperNextSalary(p.salary, p.contract), 0);
   const remainingAuctionBudget = AUCTION_CAP - totalKeeperCost;
 
   const sections = [
@@ -658,10 +675,11 @@ function ManageView({
             </div>
             {keeperEligible.filter(p => !p.isMinor).map(p => {
               const projValue = KEEPER_PROJECTIONS[p.name] ?? p.salary;
-              const nextCost  = keeperNextSalary(p.salary);
+              const nextCost  = keeperNextSalary(p.salary, p.contract);
               const discount  = projValue - nextCost;
               const yearsLeft = keeperYearsLeft(p.contract);
               const verdict   = p.contract === 'F' ? { label: 'Franchise', cls: 'bg-yellow-100 text-yellow-800' }
+                              : p.contract === 'N'  ? { label: 'Keep Option', cls: 'bg-blue-100 text-blue-700' }
                               : p.contract === 'K3' ? { label: yearsLeft === 0 ? 'Must Decide' : 'Keep', cls: 'bg-orange-100 text-orange-700' }
                               : discount > 12 ? { label: 'Strong Keep', cls: 'bg-green-100 text-green-700' }
                               : discount > 4  ? { label: 'Keep', cls: 'bg-emerald-100 text-emerald-700' }
@@ -787,11 +805,16 @@ function TeamOverviewPanel({
 // ─── Player Analysis Panel ────────────────────────────────────────────────────
 function PlayerAnalysisPanel({ player }: { player: Player }) {
   const projValue = KEEPER_PROJECTIONS[player.name] ?? null;
-  const nextCost  = keeperNextSalary(player.salary);
-  const isKeeper  = player.contract.match(/^(K[123]|M[123]?|F)$/);
+  const nextCost  = keeperNextSalary(player.salary, player.contract);
+  const isKeeper  = player.contract.match(/^(N|K[123]|M[123]?|F)$/);
   const discount  = projValue != null ? projValue - nextCost : null;
 
   const verdict = !isKeeper ? null
+    : player.contract === 'N' ? (
+        discount != null && discount > 0
+          ? { label: 'Keep Option', cls: 'bg-blue-100 text-blue-700', detail: `If kept → K1 at $${nextCost}. $${discount} discount vs projected $${projValue}.` }
+          : { label: 'Keep Option', cls: 'bg-blue-100 text-blue-700', detail: `If kept → K1 at $${nextCost}. Evaluate vs re-auction cost.` }
+      )
     : player.contract === 'F' ? { label: 'Franchise', cls: 'bg-yellow-100 text-yellow-800', detail: 'Franchised — keep indefinitely at escalating cost.' }
     : player.isMinor ? { label: 'Keep in Minors', cls: 'bg-purple-100 text-purple-700', detail: 'No cost while in minors system. Call up at $5.' }
     : discount != null && discount > 12 ? { label: 'Strong Keep', cls: 'bg-green-100 text-green-700', detail: `$${discount} discount vs projected value.` }
@@ -827,7 +850,7 @@ function PlayerAnalysisPanel({ player }: { player: Player }) {
               <span className="font-mono">${player.salary}</span>
             </div>
             <div className="flex justify-between text-sm border-b border-black/5 pb-2">
-              <span className="opacity-60">Next year cost</span>
+              <span className="opacity-60">{player.contract === 'N' ? 'Keep cost (K1)' : 'Next year cost'}</span>
               <span className="font-mono font-bold">${nextCost}</span>
             </div>
             {projValue != null && (
@@ -2064,6 +2087,8 @@ function DataView({
   const [pasteType, setPasteType] = useState<Exclude<DataType, 'unknown'>>('leagueroster');
   const [pasteContent, setPasteContent] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const forcedFileInputRef = useRef<HTMLInputElement>(null);
+  const forcedTypeRef = useRef<DataType | null>(null);
 
   const stageFiles = async (files: FileList | File[]) => {
     const newStaged: StagedFile[] = [];
@@ -2085,6 +2110,40 @@ function DataView({
     }
     setStagedFiles(prev => [...prev, ...newStaged]);
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  // Stage files with a forced data type — bypasses auto-detection entirely
+  const stageFilesForced = async (files: FileList | File[], forceType: DataType) => {
+    const newStaged: StagedFile[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!file.name.match(/\.(csv|txt)$/i)) continue;
+      const csvText = await file.text();
+      const { rowCount } = detectDataType(csvText);
+      newStaged.push({
+        id: `${Date.now()}-${i}`,
+        name: file.name,
+        csvText,
+        rawFile: file,
+        detectedType: forceType,
+        assignedType: forceType,
+        rowCount,
+        confidence: 'high' as const,
+      });
+    }
+    setStagedFiles(prev => [...prev, ...newStaged]);
+    if (forcedFileInputRef.current) forcedFileInputRef.current.value = '';
+  };
+
+  const openForcedUpload = (type: DataType) => {
+    forcedTypeRef.current = type;
+    forcedFileInputRef.current?.click();
+  };
+
+  const handleForcedFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.length && forcedTypeRef.current) {
+      stageFilesForced(e.target.files, forcedTypeRef.current);
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2228,6 +2287,7 @@ function DataView({
         <p className="text-sm mb-5 opacity-90">Drop any CSV — type is auto-detected from column headers, not filename. You can also override the type manually.</p>
 
         <input type="file" multiple className="hidden" ref={fileInputRef} onChange={handleFileChange} accept=".csv,.txt" />
+        <input type="file" multiple className="hidden" ref={forcedFileInputRef} onChange={handleForcedFileChange} accept=".csv,.txt" />
 
         <div
           onClick={() => fileInputRef.current?.click()}
@@ -2256,7 +2316,7 @@ function DataView({
               <div key={staged.id} className="bg-black/20 rounded-lg p-3 flex items-center gap-2">
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-bold truncate">{staged.name}</p>
-                  <p className="text-[10px] opacity-50">{staged.rowCount} rows · {staged.confidence === 'low' ? '⚠ verify type' : 'auto-detected'}</p>
+                  <p className="text-[10px] opacity-50">{staged.rowCount} rows · {staged.detectedType === staged.assignedType && staged.confidence !== 'low' ? 'auto-detected' : staged.confidence === 'low' ? '⚠ verify type' : 'type forced'}</p>
                 </div>
                 <select
                   value={staged.assignedType}
@@ -2298,16 +2358,25 @@ function DataView({
         <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold mb-4">From CBS Sports</p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {CBS_SOURCES.map(src => {
-            const loaded = dataStatus.find(d => d.key === src.type)?.active;
+            const statusEntry = dataStatus.find(d => d.key === src.type);
+            const loaded = statusEntry?.active;
+            const ts = dataTimestamps[src.type];
             return (
               <div key={src.type} className={`bg-white rounded-2xl border p-5 flex gap-4 ${loaded ? 'border-green-200' : 'border-black/5'}`}>
                 <span className="text-2xl shrink-0">{src.icon}</span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <p className="text-sm font-bold">{src.label}</p>
-                    {loaded && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">Loaded</span>}
+                    {loaded && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">✓ Loaded</span>}
                   </div>
-                  <p className="text-xs opacity-60 leading-relaxed">{src.desc}</p>
+                  <p className="text-xs opacity-60 leading-relaxed mb-2">{src.desc}</p>
+                  {loaded && ts && <p className="text-[10px] opacity-40 font-mono mb-2">{formatTs(ts)}</p>}
+                  <button
+                    onClick={() => openForcedUpload(src.type)}
+                    className={`text-[10px] font-bold px-3 py-1.5 rounded-lg uppercase tracking-widest transition-colors ${loaded ? 'bg-black/5 text-black/50 hover:bg-black/10' : 'bg-[#F27D26] text-white hover:bg-[#d96a1d]'}`}
+                  >
+                    {loaded ? 'Re-upload' : 'Upload CSV'}
+                  </button>
                 </div>
               </div>
             );
@@ -2321,15 +2390,23 @@ function DataView({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {EXT_SOURCES.map(src => {
             const loaded = dataStatus.find(d => d.key === src.type)?.active;
+            const ts = dataTimestamps[src.type];
             return (
               <div key={src.type} className={`bg-white rounded-2xl border p-5 flex gap-4 ${loaded ? 'border-green-200' : 'border-black/5'}`}>
                 <span className="text-2xl shrink-0">{src.icon}</span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <p className="text-sm font-bold">{src.label}</p>
-                    {loaded && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">Loaded</span>}
+                    {loaded && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">✓ Loaded</span>}
                   </div>
-                  <p className="text-xs opacity-60 leading-relaxed">{src.desc}</p>
+                  <p className="text-xs opacity-60 leading-relaxed mb-2">{src.desc}</p>
+                  {loaded && ts && <p className="text-[10px] opacity-40 font-mono mb-2">{formatTs(ts)}</p>}
+                  <button
+                    onClick={() => openForcedUpload(src.type)}
+                    className={`text-[10px] font-bold px-3 py-1.5 rounded-lg uppercase tracking-widest transition-colors ${loaded ? 'bg-black/5 text-black/50 hover:bg-black/10' : 'bg-[#F27D26] text-white hover:bg-[#d96a1d]'}`}
+                  >
+                    {loaded ? 'Re-upload' : 'Upload CSV'}
+                  </button>
                 </div>
               </div>
             );
