@@ -260,10 +260,11 @@ export default function App() {
       <main className="flex-1 overflow-y-auto p-6 md:p-10">
         <AnimatePresence mode="wait">
           {activeTab === 'dashboard' && (
-            <DashboardView 
-              key="dashboard" 
-              standings={(parsedStandings && parsedStandings.length > 0) ? parsedStandings : HISTORICAL_STANDINGS} 
-              leagueDetails={parsedLeagueDetails} 
+            <DashboardView
+              key="dashboard"
+              standings={(parsedStandings && parsedStandings.length > 0) ? parsedStandings : HISTORICAL_STANDINGS}
+              leagueDetails={parsedLeagueDetails}
+              transactions={transactions}
             />
           )}
           {activeTab === 'manage' && (
@@ -341,7 +342,7 @@ function NavItem({ active, onClick, icon, label }: { active: boolean, onClick: (
   );
 }
 
-function DashboardView({ standings, leagueDetails }: { standings: HistoricalStanding[], leagueDetails: LeagueDetails | null, key?: any }) {
+function DashboardView({ standings, leagueDetails, transactions }: { standings: HistoricalStanding[], leagueDetails: LeagueDetails | null, transactions: TransactionEntry[] | null, key?: any }) {
   const hasLeagueCategories = leagueDetails && 
     (leagueDetails.battingCategories.length > 0 || leagueDetails.pitchingCategories.length > 0);
 
@@ -401,11 +402,50 @@ function DashboardView({ standings, leagueDetails }: { standings: HistoricalStan
             <h3 className="font-serif italic text-xl">Critical Risks</h3>
             <AlertTriangle size={18} className="text-[#F27D26]" />
           </div>
-          <div className="flex flex-col gap-4">
-            <RiskItem title="Iglesias Role" desc="Robert Suarez lurking in ATL. Monitor SV." />
-            <RiskItem title="Senga/Boyd Health" desc="Fragile SP core. Depth needed." />
-            <RiskItem title="Abreu Bridge" desc="Hader returns mid-April. SV will dry up." />
-          </div>
+          {(() => {
+            // Pull recent drops from transaction log (last 14 days)
+            const MY_TEAM_IDS = ['eff you jobu', 'eyj', 'effyoujobu'];
+            const isMyTeam = (t: string) => MY_TEAM_IDS.some(id => t.toLowerCase().includes(id));
+            const cutoff = new Date();
+            cutoff.setDate(cutoff.getDate() - 14);
+
+            const recentDrops = transactions
+              ? transactions.filter(tx => {
+                  const txDate = new Date(tx.date);
+                  return isMyTeam(tx.team) && tx.type === 'drop' && txDate >= cutoff;
+                }).slice(0, 3)
+              : [];
+
+            const recentAdds = transactions
+              ? transactions.filter(tx => {
+                  const txDate = new Date(tx.date);
+                  return isMyTeam(tx.team) && tx.type === 'add' && txDate >= cutoff;
+                }).slice(0, 2)
+              : [];
+
+            if (transactions && (recentDrops.length > 0 || recentAdds.length > 0)) {
+              return (
+                <div className="flex flex-col gap-4">
+                  {recentDrops.map((tx, i) => (
+                    <RiskItem key={`drop-${i}`} title={`Dropped: ${tx.player}`} desc={`${tx.date} — monitor if this affects category balance`} />
+                  ))}
+                  {recentAdds.map((tx, i) => (
+                    <RiskItem key={`add-${i}`} title={`Added: ${tx.player}`} desc={`${tx.date} — watch roster fit and starts`} />
+                  ))}
+                </div>
+              );
+            }
+
+            // Fallback static risks when no transaction data
+            return (
+              <div className="flex flex-col gap-4">
+                <RiskItem title="Iglesias Role" desc="Robert Suarez lurking in ATL. Monitor SV." />
+                <RiskItem title="Senga/Boyd Health" desc="Fragile SP core. Depth needed." />
+                <RiskItem title="Abreu Bridge" desc="Hader returns mid-April. SV will dry up." />
+                <p className="text-[10px] opacity-30 italic mt-1">Load transaction log to auto-populate with real activity</p>
+              </div>
+            );
+          })()}
         </div>
       </div>
 
@@ -900,19 +940,62 @@ function PlayerAnalysisPanel({ player }: { player: Player }) {
 }
 
 // ─── Add/Drop Panel ───────────────────────────────────────────────────────────
-type PlayerType = 'sp' | 'rp' | 'power' | 'speed';
-type BidTier = 'stash' | 'streamer' | 'contributor' | 'starter';
 
-function inferPlayerType(pos: string[]): PlayerType {
-  if (pos.includes('SP')) return 'sp';
-  if (pos.includes('RP') || pos.includes('P')) return 'rp';
-  if (pos.includes('C') || pos.includes('1B') || pos.includes('3B') || pos.includes('DH')) return 'power';
-  return 'speed';
+function inferPositionLabel(pos: string[]): string {
+  if (pos.includes('SP')) return 'SP';
+  if (pos.includes('RP') || pos.includes('P')) return 'RP';
+  if (pos.includes('C')) return 'C';
+  if (pos.includes('SS') || pos.includes('2B') || pos.includes('MI')) return 'MI';
+  if (pos.includes('OF')) return 'OF';
+  if (pos.includes('1B') || pos.includes('3B') || pos.includes('CI') || pos.includes('DH')) return 'CI';
+  return pos[0] || '?';
 }
 
-function deriveAvailablePlayers(freeAgents: LeaguePlayer[], leagueRoster: Record<string, LeaguePlayer[]> | null): LeaguePlayer[] {
-  if (freeAgents.length > 0) return freeAgents;
-  return [];
+// Look up historical bids for a player from the transaction log
+function findLeagueBids(name: string, transactions: TransactionEntry[] | null): { team: string; amount: number; date: string }[] {
+  if (!transactions) return [];
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '');
+  const results: { team: string; amount: number; date: string }[] = [];
+  for (const tx of transactions) {
+    if (norm(tx.player).includes(norm(name)) || norm(name).includes(norm(tx.player))) {
+      const bidMatch = tx.action.match(/signed for \$?([\d.]+)/i);
+      if (bidMatch) {
+        results.push({ team: tx.team, amount: parseFloat(bidMatch[1]), date: tx.date });
+      }
+    }
+  }
+  return results.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 4);
+}
+
+// Suggest bid based on position type, league market data, and category urgency
+function suggestBid(
+  pos: string[],
+  historicalBids: { amount: number }[],
+  weakCats: string[],
+  faabBudget: number
+): { bid: number; reasoning: string } {
+  const urgencyBoost = weakCats.length >= 3 ? 2 : weakCats.length >= 1 ? 1 : 0;
+
+  // If we have league history, base on that
+  if (historicalBids.length > 0) {
+    const maxPrior = Math.max(...historicalBids.map(b => b.amount));
+    const suggested = Math.max(maxPrior + 1 + urgencyBoost, 1);
+    const final = Math.min(suggested, faabBudget - 1);
+    const reasoning = urgencyBoost > 0
+      ? `Prior high bid $${maxPrior} + $${urgencyBoost} urgency (${weakCats[0]} weak)`
+      : `Prior high bid in this league was $${maxPrior}`;
+    return { bid: final, reasoning };
+  }
+
+  // No history — estimate from position
+  const isSP = pos.includes('SP');
+  const isRP = pos.includes('RP') || pos.includes('P');
+  const base = isSP ? 5 : isRP ? 4 : 3;
+  const bid = Math.min(base + urgencyBoost, faabBudget - 1);
+  const reasoning = urgencyBoost > 0
+    ? `No prior bids found · position baseline + $${urgencyBoost} category urgency`
+    : 'No prior bids found in transaction log · position baseline';
+  return { bid, reasoning };
 }
 
 function AddDropPanel({
@@ -927,12 +1010,11 @@ function AddDropPanel({
 }) {
   const [search, setSearch]     = useState('');
   const [selected, setSelected] = useState<LeaguePlayer | null>(null);
-  const [playerType, setPlayerType] = useState<PlayerType>('sp');
-  const [bidTier, setBidTier]   = useState<BidTier>('contributor');
   const [showDropdown, setShowDropdown] = useState(false);
 
-  const available = deriveAvailablePlayers(freeAgents, leagueRoster);
+  const available = freeAgents.length > 0 ? freeAgents : [];
   const hasFAList = freeAgents.length > 0;
+  const hasTxns   = !!transactions && transactions.length > 0;
 
   const filtered = search.length >= 2
     ? available.filter(p => p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 8)
@@ -941,130 +1023,100 @@ function AddDropPanel({
   const handleSelect = (p: LeaguePlayer) => {
     setSelected(p);
     setSearch(p.name);
-    setPlayerType(inferPlayerType(p.pos));
     setShowDropdown(false);
-  };
-
-  // Bid calc — $120 FAAB roto context: most adds are $1-15, only elite pickups exceed $20
-  const TIER_LABELS: Record<BidTier, string> = { stash: 'Stash ($1-4)', streamer: 'Streamer ($4-8)', contributor: 'Contributor ($8-14)', starter: 'Starter ($15+)' };
-  const BASE_BIDS: Record<PlayerType, Record<BidTier, number>> = {
-    sp:    { stash: 2, streamer: 5, contributor: 10, starter: 18 },
-    rp:    { stash: 3, streamer: 6, contributor: 11, starter: 20 },
-    power: { stash: 2, streamer: 4, contributor:  9, starter: 16 },
-    speed: { stash: 2, streamer: 5, contributor: 10, starter: 17 },
   };
 
   const weakCats = categoryStandings
     ? categoryStandings.filter(c => c.myRank > 8).map(c => c.category)
     : [];
-  const urgencyMult = weakCats.length >= 3 ? 1.15 : weakCats.length >= 1 ? 1.07 : 1.0;
-  const baseBid = BASE_BIDS[playerType][bidTier];
-  const bid = Math.min(faabBudget - 1, Math.round(baseBid * urgencyMult));
 
-  // Potential drops: N-contract active players only, sorted by lowest projected value
-  // Excludes K/F contract players entirely — never drop a keeper
-  const activePlayers = roster.filter(p => !p.isMinor && !p.isReserve);
-  const dropCandidates = activePlayers
-    .filter(p => p.contract === 'N')
-    .map(p => ({
-      player: p,
-      projValue: KEEPER_PROJECTIONS[p.name] ?? Math.round(p.salary * 0.6),
-    }))
-    .filter(({ projValue }) => projValue < 20)
-    .sort((a, b) => a.projValue - b.projValue)
-    .slice(0, 5);
+  const historicalBids = selected ? findLeagueBids(selected.name, transactions) : [];
+  const { bid, reasoning } = selected
+    ? suggestBid(selected.pos, historicalBids, weakCats, faabBudget)
+    : { bid: 0, reasoning: '' };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      {/* Bid Calculator */}
-      <div className="flex flex-col gap-4">
-        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-6">
-          <h3 className="font-serif italic text-xl mb-4">FAAB Bid Calculator</h3>
-
-          <div className="relative mb-4">
-            <input
-              type="text"
-              value={search}
-              onChange={e => { setSearch(e.target.value); setSelected(null); setShowDropdown(true); }}
-              onFocus={() => setShowDropdown(true)}
-              placeholder={hasFAList ? 'Search free agents...' : 'Upload FA list in Data tab first'}
-              className="w-full border border-black/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-[#F27D26]"
-            />
-            {showDropdown && filtered.length > 0 && (
-              <div className="absolute z-10 top-full mt-1 w-full bg-white border border-black/10 rounded-xl shadow-lg overflow-hidden">
-                {filtered.map(p => (
-                  <button key={p.name} onMouseDown={() => handleSelect(p)} className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-[#F8F8F8] text-left">
-                    <span className="text-[10px] font-bold bg-black/5 rounded px-1.5 py-0.5">{p.pos.join('/')}</span>
-                    <span className="text-sm flex-1">{p.name}</span>
-                    <span className="text-[10px] opacity-40">{p.mlbTeam}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 mb-4">
-            {/* Player type */}
-            <div>
-              <p className="text-[10px] uppercase opacity-50 mb-2 font-bold tracking-widest">Player Type</p>
-              <div className="grid grid-cols-2 gap-1">
-                {(['sp','rp','power','speed'] as PlayerType[]).map(t => (
-                  <button key={t} onClick={() => setPlayerType(t)} className={`py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all ${playerType === t ? 'bg-[#141414] text-white' : 'bg-black/5 hover:bg-black/10'}`}>
-                    {t === 'sp' ? 'SP' : t === 'rp' ? 'RP' : t === 'power' ? 'Power' : 'Speed'}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {/* Bid tier */}
-            <div>
-              <p className="text-[10px] uppercase opacity-50 mb-2 font-bold tracking-widest">Role</p>
-              <div className="flex flex-col gap-1">
-                {(['stash','streamer','contributor','starter'] as BidTier[]).map(t => (
-                  <button key={t} onClick={() => setBidTier(t)} className={`py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all ${bidTier === t ? 'bg-[#F27D26] text-white' : 'bg-black/5 hover:bg-black/10'}`}>
-                    {TIER_LABELS[t]}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-[#141414] text-white rounded-xl p-4 text-center">
-            <p className="text-[10px] uppercase opacity-50 mb-1 tracking-widest">Suggested Bid</p>
-            <p className="font-mono text-5xl font-bold text-[#F27D26]">${bid}</p>
-            <p className="text-[10px] opacity-40 mt-1">{selected?.name || 'Player'} · {playerType.toUpperCase()} · {TIER_LABELS[bidTier]}</p>
-            {weakCats.length > 0 && <p className="text-[10px] text-yellow-400 mt-1">+urgency boost ({weakCats.slice(0,3).join(', ')} weak)</p>}
-          </div>
-
-          <div className="flex justify-between items-center mt-4 pt-4 border-t border-black/5">
-            <span className="text-[10px] opacity-50">FAAB Budget</span>
-            <EditableSidebarValue value={faabBudget} onChange={onBudgetChange} prefix="$" />
-          </div>
-        </div>
-      </div>
-
-      {/* Potential Drops */}
+    <div className="flex flex-col gap-6">
       <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-6">
-        <h3 className="font-serif italic text-xl mb-1">Potential Drops</h3>
-        <p className="text-xs opacity-50 mb-4">N-contract active players with lowest projected value — use judgment on injury/role/slump</p>
-        <div className="flex flex-col gap-2">
-          {dropCandidates.map(({ player: p, projValue }) => (
-            <div key={p.id} className="flex items-center gap-3 p-3 bg-[#F8F8F8] rounded-xl">
-              <span className="text-[10px] font-bold bg-white rounded px-1.5 py-0.5 border border-black/5">{p.pos.join('/')}</span>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{p.name}</p>
-                <p className="text-[10px] opacity-40">{p.team}</p>
-              </div>
-              <div className="text-right shrink-0">
-                <p className="font-mono text-sm">${p.salary}</p>
-                <p className="text-[10px] opacity-50">~${projValue} proj</p>
-              </div>
+        <h3 className="font-serif italic text-xl mb-4">FAAB Bid Calculator</h3>
+
+        {/* Player search */}
+        <div className="relative mb-5">
+          <input
+            type="text"
+            value={search}
+            onChange={e => { setSearch(e.target.value); setSelected(null); setShowDropdown(true); }}
+            onFocus={() => setShowDropdown(true)}
+            onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
+            placeholder={hasFAList ? 'Search available players...' : 'Upload FA list in Data tab first'}
+            className="w-full border border-black/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-[#F27D26]"
+          />
+          {showDropdown && filtered.length > 0 && (
+            <div className="absolute z-10 top-full mt-1 w-full bg-white border border-black/10 rounded-xl shadow-lg overflow-hidden">
+              {filtered.map(p => (
+                <button key={p.name} onMouseDown={() => handleSelect(p)} className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-[#F8F8F8] text-left">
+                  <span className="text-[10px] font-bold bg-black/5 rounded px-1.5 py-0.5 shrink-0">{p.pos.join('/')}</span>
+                  <span className="text-sm flex-1">{p.name}</span>
+                  <span className="text-[10px] opacity-40">{p.mlbTeam}</span>
+                </button>
+              ))}
             </div>
-          ))}
-          {dropCandidates.length === 0 && (
-            <p className="text-sm opacity-40 text-center py-4">No obvious drop candidates on active roster</p>
           )}
         </div>
-        <p className="text-[10px] opacity-30 mt-4 italic">*Keeper-contract players never shown. Injury, role loss, or sustained slump should drive actual drop decisions.</p>
+
+        {/* Bid result */}
+        {selected ? (
+          <>
+            <div className="bg-[#141414] text-white rounded-xl p-5 mb-4">
+              <div className="flex items-start justify-between mb-3">
+                <div>
+                  <p className="font-serif italic text-lg">{selected.name}</p>
+                  <p className="text-[10px] opacity-50">{inferPositionLabel(selected.pos)} · {selected.mlbTeam}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] uppercase opacity-50 tracking-widest">Suggested Bid</p>
+                  <p className="font-mono text-4xl font-bold text-[#F27D26]">${bid}</p>
+                </div>
+              </div>
+              <p className="text-[10px] opacity-50 leading-relaxed">{reasoning}</p>
+              {weakCats.length > 0 && (
+                <p className="text-[10px] text-yellow-400 mt-1">Urgency: {weakCats.slice(0,3).join(', ')} weak</p>
+              )}
+            </div>
+
+            {/* League bid history for this player */}
+            {historicalBids.length > 0 ? (
+              <div className="bg-[#F8F8F8] rounded-xl p-4">
+                <p className="text-[10px] uppercase font-bold tracking-widest opacity-50 mb-2">League Bid History</p>
+                <div className="flex flex-col gap-1.5">
+                  {historicalBids.map((b, i) => (
+                    <div key={i} className="flex justify-between items-center text-xs">
+                      <span className="opacity-60">{b.team}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="opacity-40 text-[10px]">{b.date.split(' ')[0]}</span>
+                        <span className="font-mono font-bold">${b.amount}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs opacity-40 italic">
+                {hasTxns ? `No prior bids found for ${selected.name} in transaction history.` : 'Load transaction log in Data tab for bid history.'}
+              </p>
+            )}
+          </>
+        ) : (
+          <div className="bg-[#F8F8F8] rounded-xl p-6 text-center">
+            <p className="text-sm opacity-40">Search for a player to see suggested bid and league history</p>
+            {!hasTxns && <p className="text-[10px] opacity-30 mt-1">Upload transaction log in Data tab for accurate bid recommendations</p>}
+          </div>
+        )}
+
+        <div className="flex justify-between items-center mt-4 pt-4 border-t border-black/5">
+          <span className="text-[10px] opacity-50">FAAB Budget Remaining</span>
+          <EditableSidebarValue value={faabBudget} onChange={onBudgetChange} prefix="$" />
+        </div>
       </div>
     </div>
   );
@@ -1797,30 +1849,38 @@ function StrategyLabView({
                 <span className="col-header">Gap</span>
                 <span className="col-header">Signal</span>
               </div>
-              {effectiveRoster
-                .filter(p => p.pos.some(pos => ['SP', 'RP', 'P'].includes(pos)) && !p.isMinor)
-                .map(p => {
-                  const match = parsedStuff.find(d => nameMatch(d.name, p.name));
-                  if (!match || (!match.stuffPlus && !match.pitchingPlus)) return null;
-                  const gap = (match.pitchingPlus || 0) - (match.stuffPlus || 0);
-                  const sig = gap > 8  ? { label: 'Sell window',  cls: 'text-orange-600 bg-orange-50' }
-                            : gap < -8 ? { label: 'Buy low',      cls: 'text-green-700 bg-green-50'  }
-                            :            { label: 'On track',     cls: 'text-gray-500 bg-gray-50'    };
-                  return (
-                    <div key={p.id} className="grid grid-cols-[1.5fr_0.7fr_0.7fr_0.7fr_1fr] gap-2 px-3 py-2 border-b border-black/5 last:border-0 items-center hover:bg-[#F8F8F8] transition-colors">
-                      <div>
-                        <p className="text-sm font-medium">{p.name}</p>
-                        <p className="text-[10px] opacity-40">{p.pos.join('/')} · {p.team}</p>
+              {(() => {
+                const pitcherRows = effectiveRoster
+                  .filter(p => p.pos.some(pos => ['SP', 'RP', 'P'].includes(pos)) && !p.isMinor)
+                  .map(p => {
+                    const match = parsedStuff.find(d => nameMatch(d.name, p.name));
+                    if (!match || (!match.stuffPlus && !match.pitchingPlus)) return null;
+                    const gap = (match.pitchingPlus || 0) - (match.stuffPlus || 0);
+                    // These are YOUR owned players — label signals from an owner's perspective
+                    const sig = gap > 8  ? { label: 'Sell high',     cls: 'text-orange-600 bg-orange-50' }
+                              : gap < -8 ? { label: 'Hold · Upside', cls: 'text-green-700 bg-green-50'  }
+                              :            { label: 'On track',       cls: 'text-gray-500 bg-gray-50'    };
+                    return (
+                      <div key={p.id} className="grid grid-cols-[1.5fr_0.7fr_0.7fr_0.7fr_1fr] gap-2 px-3 py-2 border-b border-black/5 last:border-0 items-center hover:bg-[#F8F8F8] transition-colors">
+                        <div>
+                          <p className="text-sm font-medium">{p.name}</p>
+                          <p className="text-[10px] opacity-40">{p.pos.join('/')} · {p.team}</p>
+                        </div>
+                        <span className="font-mono text-sm">{match.stuffPlus || '—'}</span>
+                        <span className="font-mono text-sm">{match.pitchingPlus || '—'}</span>
+                        <span className={`font-mono text-sm font-bold ${gap > 5 ? 'text-orange-500' : gap < -5 ? 'text-green-600' : 'opacity-40'}`}>
+                          {gap > 0 ? '+' : ''}{gap.toFixed(0)}
+                        </span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit ${sig.cls}`}>{sig.label}</span>
                       </div>
-                      <span className="font-mono text-sm">{match.stuffPlus || '—'}</span>
-                      <span className="font-mono text-sm">{match.pitchingPlus || '—'}</span>
-                      <span className={`font-mono text-sm font-bold ${gap > 5 ? 'text-orange-500' : gap < -5 ? 'text-green-600' : 'opacity-40'}`}>
-                        {gap > 0 ? '+' : ''}{gap.toFixed(0)}
-                      </span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit ${sig.cls}`}>{sig.label}</span>
-                    </div>
-                  );
-                }).filter(Boolean)}
+                    );
+                  }).filter(Boolean);
+                return pitcherRows.length > 0 ? pitcherRows : (
+                  <div className="px-3 py-6 text-center text-sm opacity-40 italic">
+                    No name matches found — pitcher names in your roster may differ from FanGraphs format
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -1834,29 +1894,36 @@ function StrategyLabView({
                 <span className="col-header">xwOBA</span>
                 <span className="col-header">Signal</span>
               </div>
-              {effectiveRoster
-                .filter(p => !p.pos.some(pos => ['SP', 'RP', 'P'].includes(pos)) && !p.isMinor)
-                .map(p => {
-                  const match = parsedStatcast.find(d => nameMatch(d.name, p.name));
-                  if (!match || (!match.ev && !match.xwoba)) return null;
-                  const xw = match.xwoba || 0;
-                  const sig = xw > 0.380 ? { label: 'Elite process',  cls: 'text-green-700 bg-green-50'   }
-                            : xw > 0.340 ? { label: 'Above avg',       cls: 'text-emerald-600 bg-emerald-50'}
-                            : xw > 0.300 ? { label: 'Average',         cls: 'text-gray-500 bg-gray-50'     }
-                            :              { label: 'Below avg',        cls: 'text-orange-600 bg-orange-50' };
-                  return (
-                    <div key={p.id} className="grid grid-cols-[1.5fr_0.7fr_0.7fr_0.7fr_1fr] gap-2 px-3 py-2 border-b border-black/5 last:border-0 items-center hover:bg-[#F8F8F8] transition-colors">
-                      <div>
-                        <p className="text-sm font-medium">{p.name}</p>
-                        <p className="text-[10px] opacity-40">{p.pos.join('/')} · {p.team}</p>
+              {(() => {
+                const batterRows = effectiveRoster
+                  .filter(p => !p.pos.some(pos => ['SP', 'RP', 'P'].includes(pos)) && !p.isMinor)
+                  .map(p => {
+                    const match = parsedStatcast.find(d => nameMatch(d.name, p.name));
+                    if (!match || (!match.ev && !match.xwoba)) return null;
+                    const xw = match.xwoba || 0;
+                    const sig = xw > 0.380 ? { label: 'Elite process', cls: 'text-green-700 bg-green-50'    }
+                              : xw > 0.340 ? { label: 'Above avg',      cls: 'text-emerald-600 bg-emerald-50' }
+                              : xw > 0.300 ? { label: 'Average',        cls: 'text-gray-500 bg-gray-50'      }
+                              :              { label: 'Sell high',       cls: 'text-orange-600 bg-orange-50'  };
+                    return (
+                      <div key={p.id} className="grid grid-cols-[1.5fr_0.7fr_0.7fr_0.7fr_1fr] gap-2 px-3 py-2 border-b border-black/5 last:border-0 items-center hover:bg-[#F8F8F8] transition-colors">
+                        <div>
+                          <p className="text-sm font-medium">{p.name}</p>
+                          <p className="text-[10px] opacity-40">{p.pos.join('/')} · {p.team}</p>
+                        </div>
+                        <span className="font-mono text-sm">{match.ev ? `${match.ev}` : '—'}</span>
+                        <span className="font-mono text-sm">{match.barrelRate ? `${match.barrelRate}%` : '—'}</span>
+                        <span className="font-mono text-sm">{xw ? xw.toFixed(3) : '—'}</span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit ${sig.cls}`}>{sig.label}</span>
                       </div>
-                      <span className="font-mono text-sm">{match.ev ? `${match.ev}` : '—'}</span>
-                      <span className="font-mono text-sm">{match.barrelRate ? `${match.barrelRate}%` : '—'}</span>
-                      <span className="font-mono text-sm">{xw ? xw.toFixed(3) : '—'}</span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit ${sig.cls}`}>{sig.label}</span>
-                    </div>
-                  );
-                }).filter(Boolean)}
+                    );
+                  }).filter(Boolean);
+                return batterRows.length > 0 ? batterRows : (
+                  <div className="px-3 py-6 text-center text-sm opacity-40 italic">
+                    No name matches found — batter names in your roster may differ from Statcast format
+                  </div>
+                );
+              })()}
             </div>
           )}
           {!parsedStuff && !parsedStatcast && (
@@ -2239,14 +2306,25 @@ function DataView({
   const EXT_SOURCES = [
     {
       type: 'statcast' as DataType,
-      label: 'Statcast (Baseball Savant)',
+      label: 'Statcast Batting (Baseball Savant)',
       url: 'https://baseballsavant.mlb.com/statcast_leaderboard',
       steps: [
         '1. Click the link above → Baseball Savant Statcast Leaderboard',
-        '2. Set Year = 2026, Min PA = 50 (or higher)',
+        '2. Set Year = 2026, Player Type = Batter, Min PA = 50',
         '3. Hit Search, then scroll to bottom → "Export to CSV"',
       ],
       icon: '⚾',
+    },
+    {
+      type: 'statcast' as DataType,
+      label: 'Statcast Pitching (Baseball Savant)',
+      url: 'https://baseballsavant.mlb.com/statcast_leaderboard',
+      steps: [
+        '1. Click the link above → Baseball Savant Statcast Leaderboard',
+        '2. Set Year = 2026, Player Type = Pitcher, Min BF = 30',
+        '3. Hit Search, then scroll to bottom → "Export to CSV"',
+      ],
+      icon: '🎯',
     },
     {
       type: 'stuff' as DataType,
@@ -2258,6 +2336,28 @@ function DataView({
         '3. Scroll to bottom → click the CSV export icon',
       ],
       icon: '🔥',
+    },
+    {
+      type: 'stuff' as DataType,
+      label: 'xFIP / ERA- Leaders (FanGraphs)',
+      url: 'https://www.fangraphs.com/leaders/major-league?pos=p&stats=pit&lg=all&qual=10&type=1',
+      steps: [
+        '1. Click the link above → FanGraphs Pitching Leaders (Dashboard preset)',
+        '2. Confirm Year = 2026, set Min IP = 10',
+        '3. Scroll to bottom → click the CSV export icon',
+      ],
+      icon: '📉',
+    },
+    {
+      type: 'statcast' as DataType,
+      label: 'Batting Leaders (FanGraphs)',
+      url: 'https://www.fangraphs.com/leaders/major-league?pos=all&stats=bat&lg=all&qual=50&type=8',
+      steps: [
+        '1. Click the link above → FanGraphs Batting Leaders (Advanced preset)',
+        '2. Confirm Year = 2026, set Min PA = 50',
+        '3. Scroll to bottom → click the CSV export icon',
+      ],
+      icon: '📈',
     },
   ];
 
