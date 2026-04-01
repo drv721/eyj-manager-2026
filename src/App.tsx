@@ -16,7 +16,11 @@ import {
   X,
   Key,
   Pencil,
-  ExternalLink
+  ExternalLink,
+  LayoutList,
+  ChevronDown,
+  ChevronUp,
+  Star
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -52,7 +56,7 @@ import {
 } from './services/dataService';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'roster' | 'keepers' | 'faab' | 'trades' | 'analytics' | 'data' | 'strategy'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'manage' | 'trades' | 'analytics' | 'data' | 'strategy'>('dashboard');
   const [parsedRoster, setParsedRoster] = useState<Player[] | null>(null);
   const [parsedStandings, setParsedStandings] = useState<HistoricalStanding[] | null>(null);
   const [parsedFaab, setParsedFaab] = useState<FaabEntry[] | null>(null);
@@ -187,22 +191,10 @@ export default function App() {
             label="Dashboard" 
           />
           <NavItem
-            active={activeTab === 'roster'}
-            onClick={() => setActiveTab('roster')}
-            icon={<Users size={18} />}
-            label="Roster"
-          />
-          <NavItem
-            active={activeTab === 'keepers'}
-            onClick={() => setActiveTab('keepers')}
-            icon={<Key size={18} />}
-            label="Keeper Calculator"
-          />
-          <NavItem
-            active={activeTab === 'faab'}
-            onClick={() => setActiveTab('faab')}
-            icon={<DollarSign size={18} />}
-            label="FAAB & Waivers"
+            active={activeTab === 'manage'}
+            onClick={() => setActiveTab('manage')}
+            icon={<LayoutList size={18} />}
+            label="Roster Management"
           />
           <NavItem 
             active={activeTab === 'trades'} 
@@ -236,11 +228,11 @@ export default function App() {
             <EditableSidebarValue value={faabBudget} onChange={setFaabBudget} prefix="$" />
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-[10px] uppercase opacity-50">Salary Cap</span>
-            <span className="font-mono text-lg">
+            <span className="text-[10px] uppercase opacity-50">Luxury Tax</span>
+            <span className={`font-mono text-lg ${((parsedRoster && parsedRoster.length > 0) ? parsedRoster : INITIAL_ROSTER).filter(p => !p.isMinor).reduce((sum, p) => sum + p.salary, 0) > 400 ? 'text-red-400' : ''}`}>
               ${((parsedRoster && parsedRoster.length > 0) ? parsedRoster : INITIAL_ROSTER)
                   .filter(p => !p.isMinor)
-                  .reduce((sum, p) => sum + p.salary, 0)} / $260
+                  .reduce((sum, p) => sum + p.salary, 0)} / $400
             </span>
           </div>
         </div>
@@ -256,22 +248,11 @@ export default function App() {
               leagueDetails={parsedLeagueDetails} 
             />
           )}
-          {activeTab === 'roster' && (
-            <RosterView
-              key="roster"
-              roster={(parsedRoster && parsedRoster.length > 0) ? parsedRoster : INITIAL_ROSTER}
-            />
-          )}
-          {activeTab === 'keepers' && (
-            <KeeperView
-              key="keepers"
+          {activeTab === 'manage' && (
+            <ManageView
+              key="manage"
               roster={(parsedRoster && parsedRoster.length > 0) ? parsedRoster : INITIAL_ROSTER}
               leagueDetails={parsedLeagueDetails}
-            />
-          )}
-          {activeTab === 'faab' && (
-            <FAABView
-              key="faab"
               faabBudget={faabBudget}
               onBudgetChange={setFaabBudget}
               parsedFaab={parsedFaab}
@@ -463,60 +444,665 @@ function RiskItem({ title, desc }: { title: string, desc: string }) {
   );
 }
 
-function RosterView({ roster }: { roster: Player[], key?: any }) {
-  const [filter, setFilter] = useState<'all' | 'batters' | 'pitchers' | 'minors'>('all');
-  
-  const players = roster.filter(p => {
-    if (filter === 'minors') return p.isMinor;
-    if (filter === 'batters') return !p.isMinor && !['SP', 'RP', 'P'].some(pos => p.pos.includes(pos));
-    if (filter === 'pitchers') return !p.isMinor && ['SP', 'RP', 'P'].some(pos => p.pos.includes(pos));
-    return true;
-  });
+// ─── Keeper salary escalation (per league rules) ─────────────────────────────
+function keeperNextSalary(salary: number): number {
+  if (salary === 0) return 5; // minor league call-up cost
+  const bracket = Math.floor(salary / 10);
+  return salary + (bracket + 1);
+}
+
+function keeperContractNext(contract: string): string {
+  if (contract === 'K1') return 'K2';
+  if (contract === 'K2') return 'K3';
+  if (contract === 'K3') return 'F (Franchise)';
+  if (contract === 'F') return 'F (Franchise)';
+  if (contract === 'M') return 'M (stays in minors)';
+  if (contract === 'M1') return 'M2';
+  if (contract === 'M2') return 'K1 or FA';
+  if (contract === 'M3') return 'K1';
+  return 'N/A';
+}
+
+function keeperYearsLeft(contract: string): number {
+  if (contract === 'K1') return 2; // can keep K2, K3
+  if (contract === 'K2') return 1; // can keep K3 only
+  if (contract === 'K3') return 0; // must franchise or lose
+  if (contract === 'F') return 99;
+  if (contract.startsWith('M')) return 99; // indefinite in minors
+  return 0;
+}
+
+// ─── Roster Management Mega-Tab ───────────────────────────────────────────────
+
+function ManageView({
+  roster, leagueDetails, faabBudget, onBudgetChange,
+  parsedFaab, transactions, categoryStandings, leagueRoster, freeAgents, dataTimestamps,
+}: {
+  roster: Player[];
+  leagueDetails: LeagueDetails | null;
+  faabBudget: number;
+  onBudgetChange: (n: number) => void;
+  parsedFaab: FaabEntry[] | null;
+  transactions: TransactionEntry[] | null;
+  categoryStandings: LiveCategoryStanding[] | null;
+  leagueRoster: Record<string, LeaguePlayer[]> | null;
+  freeAgents: LeaguePlayer[];
+  dataTimestamps: Record<string, string>;
+  key?: any;
+}) {
+  const [section, setSection] = useState<'roster' | 'keepers' | 'adddrop' | 'minors'>('roster');
+  const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
+
+  const LUXURY_TAX = 400;
+  const AUCTION_CAP = 260;
+
+  const activePlayers  = roster.filter(p => !p.isMinor && !p.isReserve);
+  const reservePlayers = roster.filter(p => p.isReserve && !p.isMinor);
+  const minorPlayers   = roster.filter(p => p.isMinor);
+  const activeSalary   = roster.filter(p => !p.isMinor).reduce((s, p) => s + p.salary, 0);
+
+  const keeperEligible = roster.filter(p =>
+    p.contract.match(/^(K[123]|M[123]?|F)$/)
+  );
+  const keeperCount = keeperEligible.filter(p => !p.isMinor || p.contract !== 'M').length;
+  const totalKeeperCost = keeperEligible
+    .filter(p => !p.isMinor)
+    .reduce((s, p) => s + keeperNextSalary(p.salary), 0);
+  const remainingAuctionBudget = AUCTION_CAP - totalKeeperCost;
+
+  const sections = [
+    { id: 'roster',   label: 'Roster' },
+    { id: 'keepers',  label: 'Keepers' },
+    { id: 'adddrop',  label: 'Add / Drop' },
+    { id: 'minors',   label: 'Minors' },
+  ] as const;
 
   return (
-    <motion.div 
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      className="flex flex-col gap-8"
-    >
-      <header className="flex justify-between items-center">
-        <h2 className="text-4xl font-serif italic">Roster Management</h2>
-        <div className="flex bg-white rounded-lg p-1 shadow-sm border border-black/5">
-          {(['all', 'batters', 'pitchers', 'minors'] as const).map(f => (
-            <button 
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`px-4 py-1.5 rounded-md text-xs font-bold uppercase tracking-tighter transition-all ${
-                filter === f ? 'bg-[#141414] text-white' : 'hover:bg-black/5 opacity-60'
-              }`}
-            >
-              {f}
-            </button>
-          ))}
-        </div>
+    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="flex flex-col gap-6">
+      <header>
+        <h2 className="text-4xl font-serif italic mb-1">Roster Management</h2>
+        <p className="text-sm opacity-60">Roster · Keeper decisions · FAAB · Minors</p>
       </header>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
-        <div className="data-row bg-[#F8F8F8] border-b border-black/10">
-          <span className="col-header">Pos</span>
-          <span className="col-header">Player</span>
-          <span className="col-header">Contract</span>
-          <span className="col-header">Salary</span>
-          <span className="col-header">Notes</span>
+      {/* Stats bar */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          {
+            label: 'Luxury Tax',
+            value: `$${activeSalary}`,
+            sub: `/ $${LUXURY_TAX}`,
+            alert: activeSalary > LUXURY_TAX,
+            alertMsg: `$${activeSalary - LUXURY_TAX} over — 10% tax next year`,
+          },
+          {
+            label: 'FAAB Remaining',
+            value: `$${faabBudget}`,
+            sub: `$${120 - faabBudget} spent of $120`,
+            alert: faabBudget < 20,
+            alertMsg: 'Running low',
+          },
+          {
+            label: 'Keeper Slots',
+            value: `${keeperEligible.filter(p => !p.isMinor).length} / 8`,
+            sub: `$${totalKeeperCost} cost · $${remainingAuctionBudget} to draft`,
+            alert: keeperEligible.filter(p => !p.isMinor).length > 8,
+            alertMsg: 'Over keeper limit',
+          },
+          {
+            label: 'Roster',
+            value: `${activePlayers.length + reservePlayers.length} active`,
+            sub: `${minorPlayers.length} in minors`,
+            alert: false,
+            alertMsg: '',
+          },
+        ].map(card => (
+          <div key={card.label} className={`p-4 rounded-2xl border ${card.alert ? 'bg-red-50 border-red-200' : 'bg-white border-black/5'} shadow-sm`}>
+            <p className="text-[10px] uppercase font-bold tracking-widest opacity-50 mb-1">{card.label}</p>
+            <p className={`font-mono text-2xl font-bold ${card.alert ? 'text-red-600' : ''}`}>{card.value}</p>
+            <p className="text-[10px] opacity-50 mt-0.5">{card.alert ? card.alertMsg : card.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Section tabs */}
+      <div className="flex gap-1 bg-black/5 rounded-xl p-1 w-fit">
+        {sections.map(s => (
+          <button
+            key={s.id}
+            onClick={() => { setSection(s.id); setSelectedPlayer(null); }}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${section === s.id ? 'bg-white shadow-sm text-[#141414]' : 'opacity-50 hover:opacity-80'}`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Roster section ── */}
+      {section === 'roster' && (
+        <div className="flex flex-col lg:flex-row gap-6">
+          {/* Player list */}
+          <div className="flex-1 flex flex-col gap-4">
+            {[
+              { label: 'Active Batters', players: activePlayers.filter(p => !p.pos.some(pp => ['SP','RP','P'].includes(pp))) },
+              { label: 'Active Pitchers', players: activePlayers.filter(p => p.pos.some(pp => ['SP','RP','P'].includes(pp))) },
+              { label: 'Reserve', players: reservePlayers },
+            ].map(group => (
+              group.players.length > 0 && (
+                <div key={group.label} className="bg-white rounded-2xl border border-black/5 overflow-hidden shadow-sm">
+                  <div className="px-5 py-3 border-b border-black/5 flex justify-between items-center">
+                    <p className="text-[10px] uppercase font-bold tracking-widest opacity-50">{group.label}</p>
+                    <p className="text-[10px] opacity-40">{group.players.length} players · ${group.players.reduce((s,p)=>s+p.salary,0)} salary</p>
+                  </div>
+                  {group.players.map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => setSelectedPlayer(selectedPlayer?.id === p.id ? null : p)}
+                      className={`w-full flex items-center gap-3 px-5 py-3 border-b border-black/5 last:border-0 hover:bg-[#F8F8F8] transition-colors text-left ${selectedPlayer?.id === p.id ? 'bg-[#FFF4EC]' : ''}`}
+                    >
+                      <span className="text-[10px] font-bold text-center bg-black/5 rounded px-1.5 py-0.5 w-14 shrink-0">{p.pos.join('/')}</span>
+                      <span className="flex-1 text-sm font-medium">{p.name}</span>
+                      <span className="text-[10px] opacity-40 shrink-0">{p.team}</span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${p.contract.startsWith('K') || p.contract.startsWith('F') ? 'bg-[#F27D26]/10 text-[#F27D26]' : p.contract.startsWith('M') ? 'bg-purple-100 text-purple-700' : 'bg-black/5 opacity-60'}`}>{p.contract}</span>
+                      <span className="font-mono text-sm w-10 text-right shrink-0">${p.salary}</span>
+                      <ChevronDown size={14} className={`opacity-30 shrink-0 transition-transform ${selectedPlayer?.id === p.id ? 'rotate-180' : ''}`} />
+                    </button>
+                  ))}
+                </div>
+              )
+            ))}
+          </div>
+
+          {/* Analysis panel */}
+          <div className="lg:w-80 shrink-0">
+            {selectedPlayer ? (
+              <PlayerAnalysisPanel player={selectedPlayer} />
+            ) : (
+              <TeamOverviewPanel
+                activeSalary={activeSalary}
+                faabBudget={faabBudget}
+                keeperEligible={keeperEligible}
+                totalKeeperCost={totalKeeperCost}
+                remainingAuctionBudget={remainingAuctionBudget}
+                categoryStandings={categoryStandings}
+              />
+            )}
+          </div>
         </div>
-        <div className="max-h-[600px] overflow-y-auto">
-          {players.map((p, i) => (
-            <div key={`${p.id}-${i}`} className="data-row group">
-              <span className="text-xs font-bold opacity-60">{p.pos.join('/')}</span>
-              <span className="text-sm font-medium">{p.name}</span>
-              <span className="data-value text-xs">{p.contract}</span>
-              <span className="data-value text-xs">${p.salary}</span>
-              <span className="text-xs opacity-50 italic group-hover:opacity-100">{p.notes}</span>
+      )}
+
+      {/* ── Keepers section ── */}
+      {section === 'keepers' && (
+        <div className="flex flex-col gap-6">
+          <div className="grid grid-cols-3 gap-4">
+            <div className="bg-white rounded-2xl border border-black/5 p-5 shadow-sm">
+              <p className="text-[10px] uppercase font-bold tracking-widest opacity-50 mb-1">Keeper Slots Used</p>
+              <p className="font-mono text-3xl font-bold">{keeperEligible.filter(p=>!p.isMinor).length}<span className="text-sm opacity-40 font-sans font-normal"> / 8</span></p>
             </div>
-          ))}
+            <div className="bg-white rounded-2xl border border-black/5 p-5 shadow-sm">
+              <p className="text-[10px] uppercase font-bold tracking-widest opacity-50 mb-1">Total Keeper Cost</p>
+              <p className="font-mono text-3xl font-bold">${totalKeeperCost}</p>
+            </div>
+            <div className={`rounded-2xl border p-5 shadow-sm ${remainingAuctionBudget < 50 ? 'bg-red-50 border-red-200' : 'bg-white border-black/5'}`}>
+              <p className="text-[10px] uppercase font-bold tracking-widest opacity-50 mb-1">Remaining to Draft</p>
+              <p className={`font-mono text-3xl font-bold ${remainingAuctionBudget < 50 ? 'text-red-600' : ''}`}>${remainingAuctionBudget}</p>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-black/5 overflow-hidden shadow-sm">
+            <div className="px-6 py-4 border-b border-black/5">
+              <h3 className="font-serif italic text-xl">Keeper Decisions</h3>
+              <p className="text-xs opacity-50 mt-0.5">Salary escalates each year kept. Max 8 keepers + up to 2 franchise players.</p>
+            </div>
+            <div className="grid grid-cols-[1.5fr_0.6fr_0.7fr_0.8fr_0.8fr_1fr] gap-2 px-6 py-2 bg-[#F8F8F8] border-b border-black/10 text-[10px] font-bold uppercase tracking-widest opacity-50">
+              <span>Player</span><span>Now</span><span>Next Yr</span><span>Contract</span><span>Yrs Left</span><span>Verdict</span>
+            </div>
+            {keeperEligible.filter(p => !p.isMinor).map(p => {
+              const projValue = KEEPER_PROJECTIONS[p.name] ?? p.salary;
+              const nextCost  = keeperNextSalary(p.salary);
+              const discount  = projValue - nextCost;
+              const yearsLeft = keeperYearsLeft(p.contract);
+              const verdict   = p.contract === 'F' ? { label: 'Franchise', cls: 'bg-yellow-100 text-yellow-800' }
+                              : p.contract === 'K3' ? { label: yearsLeft === 0 ? 'Must Decide' : 'Keep', cls: 'bg-orange-100 text-orange-700' }
+                              : discount > 12 ? { label: 'Strong Keep', cls: 'bg-green-100 text-green-700' }
+                              : discount > 4  ? { label: 'Keep', cls: 'bg-emerald-100 text-emerald-700' }
+                              : discount > -4 ? { label: 'Monitor', cls: 'bg-yellow-100 text-yellow-700' }
+                              :                 { label: 'Consider Cut', cls: 'bg-red-100 text-red-700' };
+              return (
+                <div key={p.id} className="grid grid-cols-[1.5fr_0.6fr_0.7fr_0.8fr_0.8fr_1fr] gap-2 px-6 py-3 border-b border-black/5 last:border-0 items-center hover:bg-[#F8F8F8] transition-colors">
+                  <div>
+                    <p className="text-sm font-medium">{p.name}</p>
+                    <p className="text-[10px] opacity-40">{p.pos.join('/')} · {p.team}</p>
+                  </div>
+                  <span className="font-mono text-sm">${p.salary}</span>
+                  <span className={`font-mono text-sm font-bold ${discount > 0 ? 'text-green-600' : 'text-red-500'}`}>${nextCost}</span>
+                  <span className="text-xs">{keeperContractNext(p.contract)}</span>
+                  <span className="text-xs opacity-60">{yearsLeft === 99 ? 'Indefinite' : yearsLeft === 0 ? 'Last year' : `${yearsLeft} more`}</span>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit ${verdict.cls}`}>{verdict.label}</span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-xs opacity-40 italic">*Keeper costs deducted from $260 auction cap. Salary escalation: $1–9 → +$1, $10–19 → +$2, $20–29 → +$3, $30–39 → +$4, etc.</p>
+        </div>
+      )}
+
+      {/* ── Add / Drop section ── */}
+      {section === 'adddrop' && (
+        <AddDropPanel
+          faabBudget={faabBudget}
+          onBudgetChange={onBudgetChange}
+          roster={roster}
+          freeAgents={freeAgents}
+          leagueRoster={leagueRoster}
+          categoryStandings={categoryStandings}
+          transactions={transactions}
+          dataTimestamps={dataTimestamps}
+        />
+      )}
+
+      {/* ── Minors section ── */}
+      {section === 'minors' && (
+        <MinorsPanel minors={minorPlayers} />
+      )}
+    </motion.div>
+  );
+}
+
+// ─── Team Overview Panel ──────────────────────────────────────────────────────
+function TeamOverviewPanel({
+  activeSalary, faabBudget, keeperEligible, totalKeeperCost, remainingAuctionBudget, categoryStandings,
+}: {
+  activeSalary: number; faabBudget: number;
+  keeperEligible: Player[]; totalKeeperCost: number; remainingAuctionBudget: number;
+  categoryStandings: LiveCategoryStanding[] | null;
+}) {
+  const LUXURY_TAX = 400;
+  const taxPct = Math.min(100, (activeSalary / LUXURY_TAX) * 100);
+
+  return (
+    <div className="bg-[#141414] text-white rounded-2xl p-6 flex flex-col gap-5 sticky top-4">
+      <div>
+        <p className="text-[10px] uppercase opacity-50 mb-1 tracking-widest">Team Overview</p>
+        <p className="text-xs opacity-40">Click any player for analysis</p>
+      </div>
+
+      {/* Luxury tax bar */}
+      <div>
+        <div className="flex justify-between text-[10px] opacity-50 mb-1">
+          <span>Salary</span><span>${activeSalary} / $400 luxury tax</span>
+        </div>
+        <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full transition-all ${activeSalary > LUXURY_TAX ? 'bg-red-400' : activeSalary > 350 ? 'bg-yellow-400' : 'bg-[#F27D26]'}`} style={{ width: `${taxPct}%` }} />
+        </div>
+        {activeSalary > LUXURY_TAX && (
+          <p className="text-[10px] text-red-400 mt-1">⚠ ${activeSalary - LUXURY_TAX} over luxury tax</p>
+        )}
+      </div>
+
+      {/* FAAB bar */}
+      <div>
+        <div className="flex justify-between text-[10px] opacity-50 mb-1">
+          <span>FAAB</span><span>${faabBudget} remaining</span>
+        </div>
+        <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+          <div className="h-full bg-[#F27D26] rounded-full" style={{ width: `${(faabBudget / 120) * 100}%` }} />
         </div>
       </div>
-    </motion.div>
+
+      {/* Keeper summary */}
+      <div className="pt-4 border-t border-white/10">
+        <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">Keeper Status</p>
+        <div className="flex justify-between text-sm mb-1">
+          <span className="opacity-70">Slots used</span>
+          <span className="font-mono">{keeperEligible.filter(p=>!p.isMinor).length} / 8</span>
+        </div>
+        <div className="flex justify-between text-sm mb-1">
+          <span className="opacity-70">Total keeper cost</span>
+          <span className="font-mono">${totalKeeperCost}</span>
+        </div>
+        <div className="flex justify-between text-sm">
+          <span className="opacity-70">Left to draft</span>
+          <span className={`font-mono font-bold ${remainingAuctionBudget < 50 ? 'text-red-400' : 'text-green-400'}`}>${remainingAuctionBudget}</span>
+        </div>
+      </div>
+
+      {/* Category outlook */}
+      {categoryStandings && categoryStandings.length > 0 && (
+        <div className="pt-4 border-t border-white/10">
+          <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">Category Ranks</p>
+          <div className="grid grid-cols-5 gap-1">
+            {categoryStandings.map(c => (
+              <div key={c.category} className="text-center">
+                <p className="text-[10px] opacity-40">{c.category}</p>
+                <p className={`text-xs font-mono font-bold ${c.myRank <= 3 ? 'text-green-400' : c.myRank <= 6 ? 'text-yellow-400' : 'text-red-400'}`}>#{c.myRank}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Player Analysis Panel ────────────────────────────────────────────────────
+function PlayerAnalysisPanel({ player }: { player: Player }) {
+  const projValue = KEEPER_PROJECTIONS[player.name] ?? null;
+  const nextCost  = keeperNextSalary(player.salary);
+  const isKeeper  = player.contract.match(/^(K[123]|M[123]?|F)$/);
+  const discount  = projValue != null ? projValue - nextCost : null;
+
+  const verdict = !isKeeper ? null
+    : player.contract === 'F' ? { label: 'Franchise', cls: 'bg-yellow-100 text-yellow-800', detail: 'Franchised — keep indefinitely at escalating cost.' }
+    : player.isMinor ? { label: 'Keep in Minors', cls: 'bg-purple-100 text-purple-700', detail: 'No cost while in minors system. Call up at $5.' }
+    : discount != null && discount > 12 ? { label: 'Strong Keep', cls: 'bg-green-100 text-green-700', detail: `$${discount} discount vs projected value.` }
+    : discount != null && discount > 4  ? { label: 'Keep', cls: 'bg-emerald-100 text-emerald-700', detail: `$${discount} discount — solid value.` }
+    : discount != null && discount > -4 ? { label: 'Monitor', cls: 'bg-yellow-100 text-yellow-700', detail: 'Near market price. Re-evaluate closer to keeper deadline.' }
+    : { label: 'Consider Cut', cls: 'bg-red-100 text-red-700', detail: `Projected at $${projValue ?? '?'}, costs $${nextCost} to keep.` };
+
+  return (
+    <div className="bg-white rounded-2xl border border-black/5 shadow-sm overflow-hidden sticky top-4">
+      <div className="bg-[#141414] text-white p-5">
+        <div className="flex items-start justify-between gap-2 mb-2">
+          <div>
+            <p className="font-serif italic text-xl leading-tight">{player.name}</p>
+            <p className="text-xs opacity-50 mt-0.5">{player.pos.join(' / ')} · {player.team}</p>
+          </div>
+          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 mt-1 ${player.contract.startsWith('K') || player.contract === 'F' ? 'bg-[#F27D26]/20 text-[#F27D26]' : player.contract.startsWith('M') ? 'bg-purple-500/20 text-purple-300' : 'bg-white/10 text-white/50'}`}>{player.contract}</span>
+        </div>
+        <p className="font-mono text-3xl font-bold">${player.salary}</p>
+      </div>
+
+      <div className="p-5 flex flex-col gap-4">
+        {verdict && (
+          <div className={`rounded-xl p-3 ${verdict.cls}`}>
+            <p className="text-xs font-bold mb-0.5">{verdict.label}</p>
+            <p className="text-[11px] opacity-80">{verdict.detail}</p>
+          </div>
+        )}
+
+        {isKeeper && !player.isMinor && (
+          <div className="flex flex-col gap-2">
+            <div className="flex justify-between text-sm border-b border-black/5 pb-2">
+              <span className="opacity-60">Current salary</span>
+              <span className="font-mono">${player.salary}</span>
+            </div>
+            <div className="flex justify-between text-sm border-b border-black/5 pb-2">
+              <span className="opacity-60">Next year cost</span>
+              <span className="font-mono font-bold">${nextCost}</span>
+            </div>
+            {projValue != null && (
+              <div className="flex justify-between text-sm border-b border-black/5 pb-2">
+                <span className="opacity-60">Projected value</span>
+                <span className="font-mono">${projValue}</span>
+              </div>
+            )}
+            {discount != null && (
+              <div className="flex justify-between text-sm">
+                <span className="opacity-60">Discount</span>
+                <span className={`font-mono font-bold ${discount > 0 ? 'text-green-600' : 'text-red-500'}`}>{discount > 0 ? '+' : ''}{discount > 0 ? `$${discount}` : `-$${Math.abs(discount)}`}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="flex flex-col gap-1.5 pt-2 border-t border-black/5">
+          <div className="flex justify-between text-sm">
+            <span className="opacity-60">Next contract</span>
+            <span className="text-xs">{keeperContractNext(player.contract)}</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="opacity-60">Years remaining</span>
+            <span className="text-xs">{keeperYearsLeft(player.contract) === 99 ? 'Indefinite' : keeperYearsLeft(player.contract) === 0 ? 'Last year — decide now' : `${keeperYearsLeft(player.contract)} more`}</span>
+          </div>
+        </div>
+
+        {player.notes && (
+          <div className="bg-[#F8F8F8] rounded-lg p-3">
+            <p className="text-[11px] opacity-60 leading-relaxed">{player.notes}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Add/Drop Panel ───────────────────────────────────────────────────────────
+type PlayerType = 'sp' | 'rp' | 'power' | 'speed';
+type BidTier = 'stash' | 'streamer' | 'contributor' | 'starter';
+
+function inferPlayerType(pos: string[]): PlayerType {
+  if (pos.includes('SP')) return 'sp';
+  if (pos.includes('RP') || pos.includes('P')) return 'rp';
+  if (pos.includes('C') || pos.includes('1B') || pos.includes('3B') || pos.includes('DH')) return 'power';
+  return 'speed';
+}
+
+function deriveAvailablePlayers(freeAgents: LeaguePlayer[], leagueRoster: Record<string, LeaguePlayer[]> | null): LeaguePlayer[] {
+  if (freeAgents.length > 0) return freeAgents;
+  return [];
+}
+
+function AddDropPanel({
+  faabBudget, onBudgetChange, roster, freeAgents, leagueRoster, categoryStandings, transactions, dataTimestamps,
+}: {
+  faabBudget: number; onBudgetChange: (n: number) => void;
+  roster: Player[]; freeAgents: LeaguePlayer[];
+  leagueRoster: Record<string, LeaguePlayer[]> | null;
+  categoryStandings: LiveCategoryStanding[] | null;
+  transactions: TransactionEntry[] | null;
+  dataTimestamps: Record<string, string>;
+}) {
+  const [search, setSearch]     = useState('');
+  const [selected, setSelected] = useState<LeaguePlayer | null>(null);
+  const [playerType, setPlayerType] = useState<PlayerType>('sp');
+  const [bidTier, setBidTier]   = useState<BidTier>('contributor');
+  const [showDropdown, setShowDropdown] = useState(false);
+
+  const available = deriveAvailablePlayers(freeAgents, leagueRoster);
+  const hasFAList = freeAgents.length > 0;
+
+  const filtered = search.length >= 2
+    ? available.filter(p => p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 8)
+    : [];
+
+  const handleSelect = (p: LeaguePlayer) => {
+    setSelected(p);
+    setSearch(p.name);
+    setPlayerType(inferPlayerType(p.pos));
+    setShowDropdown(false);
+  };
+
+  // Bid calc (simplified version of FAABView logic)
+  const TIER_LABELS: Record<BidTier, string> = { stash: 'Stash', streamer: 'Streamer', contributor: 'Contributor', starter: 'Starter' };
+  const BASE_BIDS: Record<PlayerType, Record<BidTier, number>> = {
+    sp:    { stash: 5,  streamer: 12, contributor: 22, starter: 38 },
+    rp:    { stash: 8,  streamer: 15, contributor: 25, starter: 40 },
+    power: { stash: 5,  streamer: 10, contributor: 20, starter: 35 },
+    speed: { stash: 6,  streamer: 12, contributor: 22, starter: 36 },
+  };
+
+  const weakCats = categoryStandings
+    ? categoryStandings.filter(c => c.myRank > 8).map(c => c.category)
+    : [];
+  const urgencyMult = weakCats.length >= 3 ? 1.15 : weakCats.length >= 1 ? 1.07 : 1.0;
+  const baseBid = BASE_BIDS[playerType][bidTier];
+  const bid = Math.min(faabBudget - 1, Math.round(baseBid * urgencyMult));
+
+  // Drop candidates: lowest-value active non-keeper players
+  const activePlayers = roster.filter(p => !p.isMinor && !p.isReserve);
+  const dropCandidates = activePlayers
+    .filter(p => !p.contract.match(/^(K[123]|F)$/))
+    .map(p => ({
+      player: p,
+      projValue: KEEPER_PROJECTIONS[p.name] ?? Math.round(p.salary * 0.7),
+      overpaid: p.salary - (KEEPER_PROJECTIONS[p.name] ?? Math.round(p.salary * 0.7)),
+    }))
+    .sort((a, b) => b.overpaid - a.overpaid)
+    .slice(0, 5);
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Bid Calculator */}
+      <div className="flex flex-col gap-4">
+        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-6">
+          <h3 className="font-serif italic text-xl mb-4">FAAB Bid Calculator</h3>
+
+          <div className="relative mb-4">
+            <input
+              type="text"
+              value={search}
+              onChange={e => { setSearch(e.target.value); setSelected(null); setShowDropdown(true); }}
+              onFocus={() => setShowDropdown(true)}
+              placeholder={hasFAList ? 'Search free agents...' : 'Upload FA list in Data tab first'}
+              className="w-full border border-black/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-[#F27D26]"
+            />
+            {showDropdown && filtered.length > 0 && (
+              <div className="absolute z-10 top-full mt-1 w-full bg-white border border-black/10 rounded-xl shadow-lg overflow-hidden">
+                {filtered.map(p => (
+                  <button key={p.name} onMouseDown={() => handleSelect(p)} className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-[#F8F8F8] text-left">
+                    <span className="text-[10px] font-bold bg-black/5 rounded px-1.5 py-0.5">{p.pos.join('/')}</span>
+                    <span className="text-sm flex-1">{p.name}</span>
+                    <span className="text-[10px] opacity-40">{p.mlbTeam}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            {/* Player type */}
+            <div>
+              <p className="text-[10px] uppercase opacity-50 mb-2 font-bold tracking-widest">Player Type</p>
+              <div className="grid grid-cols-2 gap-1">
+                {(['sp','rp','power','speed'] as PlayerType[]).map(t => (
+                  <button key={t} onClick={() => setPlayerType(t)} className={`py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all ${playerType === t ? 'bg-[#141414] text-white' : 'bg-black/5 hover:bg-black/10'}`}>
+                    {t === 'sp' ? 'SP' : t === 'rp' ? 'RP' : t === 'power' ? 'Power' : 'Speed'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* Bid tier */}
+            <div>
+              <p className="text-[10px] uppercase opacity-50 mb-2 font-bold tracking-widest">Role</p>
+              <div className="flex flex-col gap-1">
+                {(['stash','streamer','contributor','starter'] as BidTier[]).map(t => (
+                  <button key={t} onClick={() => setBidTier(t)} className={`py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all ${bidTier === t ? 'bg-[#F27D26] text-white' : 'bg-black/5 hover:bg-black/10'}`}>
+                    {TIER_LABELS[t]}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-[#141414] text-white rounded-xl p-4 text-center">
+            <p className="text-[10px] uppercase opacity-50 mb-1 tracking-widest">Suggested Bid</p>
+            <p className="font-mono text-5xl font-bold text-[#F27D26]">${bid}</p>
+            <p className="text-[10px] opacity-40 mt-1">{selected?.name || 'Player'} · {playerType.toUpperCase()} · {TIER_LABELS[bidTier]}</p>
+            {weakCats.length > 0 && <p className="text-[10px] text-yellow-400 mt-1">+urgency boost ({weakCats.slice(0,3).join(', ')} weak)</p>}
+          </div>
+
+          <div className="flex justify-between items-center mt-4 pt-4 border-t border-black/5">
+            <span className="text-[10px] opacity-50">FAAB Budget</span>
+            <EditableSidebarValue value={faabBudget} onChange={onBudgetChange} prefix="$" />
+          </div>
+        </div>
+      </div>
+
+      {/* Drop Candidates */}
+      <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-6">
+        <h3 className="font-serif italic text-xl mb-1">Drop Candidates</h3>
+        <p className="text-xs opacity-50 mb-4">Non-keeper players sorted by salary vs. projected value</p>
+        <div className="flex flex-col gap-2">
+          {dropCandidates.map(({ player: p, projValue, overpaid }) => (
+            <div key={p.id} className="flex items-center gap-3 p-3 bg-[#F8F8F8] rounded-xl">
+              <span className="text-[10px] font-bold bg-white rounded px-1.5 py-0.5 border border-black/5">{p.pos.join('/')}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium truncate">{p.name}</p>
+                <p className="text-[10px] opacity-40">{p.team}</p>
+              </div>
+              <div className="text-right shrink-0">
+                <p className="font-mono text-sm">${p.salary}</p>
+                <p className={`text-[10px] font-bold ${overpaid > 5 ? 'text-red-500' : overpaid > 0 ? 'text-orange-500' : 'text-green-600'}`}>
+                  {overpaid > 0 ? `$${overpaid} over` : `$${Math.abs(overpaid)} under`}
+                </p>
+              </div>
+            </div>
+          ))}
+          {dropCandidates.length === 0 && (
+            <p className="text-sm opacity-40 text-center py-4">All non-keeper players look reasonably priced</p>
+          )}
+        </div>
+        <p className="text-[10px] opacity-30 mt-4 italic">*Based on KEEPER_PROJECTIONS. K/F contract players excluded.</p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Minors Panel ─────────────────────────────────────────────────────────────
+const PROSPECT_DATA: Record<string, { eta: string; level: string; grade: string; blurb: string; fg: string }> = {
+  'Cade Horton':       { eta: '2026', level: 'MLB Ready', grade: 'A-', blurb: 'CHC SP. Top-10 prospect. Upper-90s heat, plus CB. Likely Day 1 starter.', fg: 'https://www.fangraphs.com/players/cade-horton/sa3131453/stats' },
+  'Hagen Smith':       { eta: '2026', level: 'AA/MLB',    grade: 'B+', blurb: 'CHW SP. Elite prospect, aggressive promotion likely.', fg: 'https://www.fangraphs.com/players/hagen-smith/sa3131855/stats' },
+  'Kyle Manzardo':     { eta: 'Now',  level: 'MLB',       grade: 'B',  blurb: 'CLE 1B. Called up — left-handed bat, solid power upside.', fg: 'https://www.fangraphs.com/players/kyle-manzardo/sa842044/stats' },
+  'Brooks Lee':        { eta: '2026', level: 'AAA/MLB',   grade: 'B',  blurb: 'MIN SS. Switch-hitter, hit-tool driven. Near-MLB ready.', fg: 'https://www.fangraphs.com/players/brooks-lee/sa3131415/stats' },
+  'Jett Williams':     { eta: '2027', level: 'AA',        grade: 'B',  blurb: 'MIL SS. Plus speed, developing power. Exciting ceiling.', fg: 'https://www.fangraphs.com/players/jett-williams/sa3131851/stats' },
+  'Braden Montgomery': { eta: '2027', level: 'A+/AA',     grade: 'B-', blurb: 'CHW OF. 2024 1st-rounder. Raw power, high K-rate to work through.', fg: 'https://www.fangraphs.com/players/braden-montgomery/sa3131866/stats' },
+};
+
+function MinorsPanel({ minors }: { minors: Player[] }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] uppercase font-bold tracking-widest opacity-50">{minors.length} players in minor league system (max 8)</p>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {minors.map(p => {
+          const data = PROSPECT_DATA[p.name];
+          return (
+            <div key={p.id} className="bg-white rounded-2xl border border-black/5 shadow-sm overflow-hidden">
+              <div className="bg-[#141414] text-white px-5 py-4 flex items-start justify-between">
+                <div>
+                  <p className="font-serif italic text-lg">{p.name}</p>
+                  <p className="text-[10px] opacity-50 mt-0.5">{p.pos.join('/')} · {p.team} · {p.contract}</p>
+                </div>
+                {data && (
+                  <span className={`text-sm font-bold px-2 py-0.5 rounded-full mt-1 ${
+                    data.grade.startsWith('A') ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'
+                  }`}>{data.grade}</span>
+                )}
+              </div>
+              <div className="p-5 flex flex-col gap-3">
+                {data ? (
+                  <>
+                    <div className="flex gap-4 text-xs">
+                      <div><span className="opacity-50">Level </span><span className="font-medium">{data.level}</span></div>
+                      <div><span className="opacity-50">ETA </span><span className="font-medium">{data.eta}</span></div>
+                      <div><span className="opacity-50">Call-up cost </span><span className="font-mono font-bold">${p.salary === 0 ? 5 : p.salary}</span></div>
+                    </div>
+                    <p className="text-xs opacity-70 leading-relaxed">{data.blurb}</p>
+                    <a
+                      href={data.fg}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 text-[11px] font-bold text-[#F27D26] hover:text-[#d96a1d] transition-colors"
+                    >
+                      <ExternalLink size={11} /> View on FanGraphs
+                    </a>
+                  </>
+                ) : (
+                  <p className="text-xs opacity-40">No prospect data on file.</p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {minors.length === 0 && (
+          <div className="col-span-2 bg-white rounded-2xl border border-black/5 p-8 text-center">
+            <p className="text-sm opacity-40">No players in minor league system</p>
+          </div>
+        )}
+      </div>
+      <p className="text-[10px] opacity-30 italic">*Prospect grades and blurbs are manually maintained. Click FanGraphs links for current stats.</p>
+    </div>
   );
 }
 
@@ -563,541 +1149,6 @@ function EditableSidebarValue({
     >
       {prefix}{value}
     </button>
-  );
-}
-
-type PlayerType = 'closer' | 'sp' | 'power' | 'speed' | 'rp';
-type BidTier = 'impact' | 'contributor' | 'flyer';
-
-const BID_BASE: Record<PlayerType, Record<BidTier, number>> = {
-  closer:      { impact: 25, contributor: 15, flyer: 5  },
-  sp:          { impact: 20, contributor: 11, flyer: 3  },
-  power:       { impact: 22, contributor: 13, flyer: 4  },
-  speed:       { impact: 20, contributor: 11, flyer: 3  },
-  rp:          { impact: 10, contributor:  6, flyer: 2  },
-};
-
-const TYPE_CATEGORY: Record<PlayerType, string> = {
-  closer: 'S', sp: 'ERA', power: 'HR', speed: 'SB', rp: 'ERA',
-};
-
-function calcBid(
-  type: PlayerType,
-  tier: BidTier,
-  budget: number,
-  standings: LiveCategoryStanding[] | null
-): { min: number; suggested: number; max: number; reason: string } {
-  const base = BID_BASE[type][tier];
-  const cat = TYPE_CATEGORY[type];
-  const standing = standings?.find(c => c.category === cat);
-  const urgency = standing && standing.myRank > 8 ? 1.4
-                : standing && standing.myRank > 6 ? 1.2
-                : 1.0;
-  const raw = base * urgency;
-  const capped = Math.min(raw, budget * 0.5);
-  const reason = urgency > 1.2
-    ? `+${Math.round((urgency - 1) * 100)}% urgency: ranked #${standing?.myRank} in ${cat}`
-    : urgency > 1
-    ? `+${Math.round((urgency - 1) * 100)}% moderate need in ${cat}`
-    : `Standard market rate`;
-
-  return {
-    min: Math.max(1, Math.floor(capped * 0.75)),
-    suggested: Math.round(capped),
-    max: Math.min(budget, Math.ceil(capped * 1.3)),
-    reason,
-  };
-}
-
-const TYPE_COLORS: Record<string, string> = {
-  Trade:        'bg-purple-50 text-purple-700',
-  Add:          'bg-green-50 text-green-700',
-  Drop:         'bg-red-50 text-red-600',
-  Waiver:       'bg-blue-50 text-blue-700',
-  'Roster Move':'bg-gray-100 text-gray-600',
-  Other:        'bg-gray-50 text-gray-500',
-};
-
-function TransactionLog({ transactions }: { transactions: TransactionEntry[] }) {
-  const [teamFilter, setTeamFilter] = useState('');
-  const [typeFilter, setTypeFilter] = useState('');
-  const [playerFilter, setPlayerFilter] = useState('');
-
-  const teams = Array.from(new Set(transactions.map(t => t.team))).sort();
-  const types = Array.from(new Set(transactions.map(t => t.type))).sort();
-
-  const filtered = transactions.filter(t =>
-    (!teamFilter   || t.team === teamFilter) &&
-    (!typeFilter   || t.type === typeFilter) &&
-    (!playerFilter || t.player.toLowerCase().includes(playerFilter.toLowerCase()))
-  );
-
-  // Most recent first (sort by date string — CBS format is M/D/YY)
-  const sorted = [...filtered].sort((a, b) => {
-    const da = new Date(a.date.replace(' ET','').trim());
-    const db = new Date(b.date.replace(' ET','').trim());
-    return isNaN(db.getTime()) ? -1 : db.getTime() - da.getTime();
-  });
-
-  return (
-    <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
-      <div className="px-6 py-4 border-b border-black/5 flex flex-wrap gap-3 items-center">
-        <h3 className="font-serif italic text-xl mr-auto">
-          Transaction Log <span className="text-sm opacity-40 font-sans not-italic">({filtered.length})</span>
-        </h3>
-        <input
-          value={playerFilter}
-          onChange={e => setPlayerFilter(e.target.value)}
-          placeholder="Search player..."
-          className="text-xs border border-black/10 rounded-lg px-3 py-1.5 bg-[#F8F8F8] focus:outline-none focus:border-[#F27D26] w-36"
-        />
-        <select
-          value={teamFilter}
-          onChange={e => setTeamFilter(e.target.value)}
-          className="text-xs border border-black/10 rounded-lg px-3 py-1.5 bg-[#F8F8F8] focus:outline-none focus:border-[#F27D26]"
-        >
-          <option value="">All teams</option>
-          {teams.map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
-        <select
-          value={typeFilter}
-          onChange={e => setTypeFilter(e.target.value)}
-          className="text-xs border border-black/10 rounded-lg px-3 py-1.5 bg-[#F8F8F8] focus:outline-none focus:border-[#F27D26]"
-        >
-          <option value="">All types</option>
-          {types.map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
-      </div>
-      <div className="grid grid-cols-[1fr_1.2fr_1fr_0.7fr] gap-2 px-6 py-2 bg-[#F8F8F8] border-b border-black/10 text-[10px]">
-        <span className="col-header">Player</span>
-        <span className="col-header">Team</span>
-        <span className="col-header">Action</span>
-        <span className="col-header">Date</span>
-      </div>
-      <div className="max-h-96 overflow-y-auto">
-        {sorted.slice(0, 200).map((entry, i) => (
-          <div key={i} className="grid grid-cols-[1fr_1.2fr_1fr_0.7fr] gap-2 px-6 py-2 border-b border-black/5 items-center hover:bg-[#F8F8F8] transition-colors">
-            <span className="text-sm font-medium truncate">{entry.player}</span>
-            <span className="text-xs opacity-70 truncate">{entry.team}</span>
-            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit ${TYPE_COLORS[entry.type] || TYPE_COLORS.Other}`}>
-              {entry.type}
-            </span>
-            <span className="text-xs opacity-40 font-mono">{entry.date.split(' ')[0]}</span>
-          </div>
-        ))}
-        {sorted.length === 0 && (
-          <p className="px-6 py-8 text-sm opacity-40 italic">No transactions match your filters.</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Infer PlayerType from positions array
-function inferPlayerType(pos: string[]): PlayerType {
-  if (pos.includes('SP')) return 'sp';
-  if (pos.includes('RP') || pos.includes('P')) return 'rp';
-  if (pos.includes('C') || pos.includes('1B') || pos.includes('3B') || pos.includes('DH')) return 'power';
-  if (pos.includes('SS') || pos.includes('2B') || pos.includes('OF')) return 'speed';
-  return 'sp';
-}
-
-// Derive available players: uploaded FA list first, otherwise everyone NOT on a roster
-function deriveAvailablePlayers(
-  freeAgents: LeaguePlayer[],
-  leagueRoster: Record<string, LeaguePlayer[]> | null
-): LeaguePlayer[] {
-  if (freeAgents.length > 0) return freeAgents;
-  if (!leagueRoster) return [];
-  const rostered = new Set<string>();
-  Object.values(leagueRoster).forEach(players =>
-    players.forEach(p => rostered.add(p.name.toLowerCase()))
-  );
-  // Return minor-league players from any roster as "available" isn't possible here,
-  // so we just note that no FA list was uploaded.
-  return [];
-}
-
-function FAABView({
-  faabBudget,
-  onBudgetChange,
-  parsedFaab,
-  transactions,
-  categoryStandings,
-  leagueRoster,
-  freeAgents,
-  dataTimestamps,
-}: {
-  faabBudget: number;
-  onBudgetChange: (n: number) => void;
-  parsedFaab: FaabEntry[] | null;
-  transactions: TransactionEntry[] | null;
-  categoryStandings: LiveCategoryStanding[] | null;
-  leagueRoster: Record<string, LeaguePlayer[]> | null;
-  freeAgents: LeaguePlayer[];
-  dataTimestamps: Record<string, string>;
-  key?: any;
-}) {
-  const [search, setSearch]       = useState('');
-  const [selected, setSelected]   = useState<LeaguePlayer | null>(null);
-  const [playerType, setPlayerType] = useState<PlayerType>('sp');
-  const [bidTier, setBidTier]     = useState<BidTier>('contributor');
-  const [showDropdown, setShowDropdown] = useState(false);
-
-  const available = deriveAvailablePlayers(freeAgents, leagueRoster);
-  const hasFAList = freeAgents.length > 0;
-
-  // Filter available players by search term
-  const searchResults = search.length >= 2
-    ? available.filter(p => p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 8)
-    : [];
-
-  // When a player is selected, auto-set their type
-  const handleSelect = (p: LeaguePlayer) => {
-    setSelected(p);
-    setSearch(p.name);
-    setPlayerType(inferPlayerType(p.pos));
-    setShowDropdown(false);
-  };
-
-  const bid = calcBid(playerType, bidTier, faabBudget, categoryStandings);
-  const spentPct = ((120 - faabBudget) / 120) * 100;
-
-  const TYPE_LABELS: Record<PlayerType, string> = {
-    closer: 'Closer', sp: 'SP', power: 'Power bat', speed: 'Speed/OBP', rp: 'Setup RP',
-  };
-  const TIER_LABELS: Record<BidTier, string> = {
-    impact: 'Impact (season-long)', contributor: 'Contributor', flyer: 'Flyer / spot',
-  };
-
-  // Weak categories → waiver priorities
-  const weakCats: LiveCategoryStanding[] = categoryStandings
-    ? categoryStandings.filter(c => c.myRank > 7).sort((a, b) => b.myRank - a.myRank)
-    : [];
-
-  // Weekly targets: FA players who address weak cats + trade targets from other rosters
-  const catToTypes: Record<string, PlayerType[]> = {
-    HR: ['power'], OBP: ['power', 'speed'], R: ['power', 'speed'], RBI: ['power'],
-    SB: ['speed'], ERA: ['sp'], INN: ['sp'], K: ['sp'], S: ['closer'], WHIP: ['sp'],
-  };
-
-  const faTargets: LeaguePlayer[] = (() => {
-    if (!hasFAList || weakCats.length === 0) return available.slice(0, 6);
-    const neededTypes = new Set(weakCats.flatMap(c => catToTypes[c.category] ?? []));
-    const matching = available.filter(p => {
-      const t = inferPlayerType(p.pos);
-      return neededTypes.has(t);
-    });
-    return matching.slice(0, 6);
-  })();
-
-  // Trade targets: players on other rosters who address weak cats
-  const tradeTargets: { player: LeaguePlayer; team: string }[] = (() => {
-    if (!leagueRoster || weakCats.length === 0) return [];
-    const neededTypes = new Set(weakCats.flatMap(c => catToTypes[c.category] ?? []));
-    const targets: { player: LeaguePlayer; team: string }[] = [];
-    for (const [abbrev, players] of Object.entries(leagueRoster)) {
-      if (abbrev === 'EYJ') continue;
-      for (const p of players) {
-        if (p.status === 'active' && neededTypes.has(inferPlayerType(p.pos))) {
-          targets.push({ player: p, team: abbrev });
-        }
-      }
-    }
-    return targets.slice(0, 8);
-  })();
-
-  // Format timestamp for display
-  const fmtTs = (iso: string) => {
-    const d = new Date(iso);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
-      ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-  };
-
-  const tsEntries = Object.entries(dataTimestamps);
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      className="flex flex-col gap-8"
-    >
-      <header className="flex justify-between items-end">
-        <div>
-          <h2 className="text-4xl font-serif italic mb-2">FAAB & Waivers</h2>
-          <p className="text-sm opacity-60">Bid calculator · waiver priorities · weekly targets</p>
-        </div>
-        <div className="text-right">
-          <p className="text-[10px] uppercase opacity-50 mb-1">Remaining Budget</p>
-          <div className="flex items-center gap-1 justify-end">
-            <span className="font-mono text-3xl">$</span>
-            <input
-              type="number"
-              value={faabBudget}
-              onChange={e => { const n = parseInt(e.target.value); if (!isNaN(n) && n >= 0) onBudgetChange(n); }}
-              className="font-mono text-3xl w-20 bg-transparent border-b-2 border-[#F27D26] outline-none text-right"
-            />
-          </div>
-          <div className="w-24 h-1 bg-black/10 rounded-full mt-2 ml-auto">
-            <div className="h-full bg-[#F27D26] rounded-full" style={{ width: `${Math.max(0, 100 - spentPct)}%` }} />
-          </div>
-          <p className="text-[10px] opacity-40 mt-1">${120 - faabBudget} spent of $120</p>
-        </div>
-      </header>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Bid Calculator */}
-        <div className="bg-[#141414] text-white p-6 rounded-2xl shadow-lg">
-          <div className="flex justify-between items-center mb-5">
-            <h3 className="font-serif italic text-xl">Bid Calculator</h3>
-            <DollarSign size={18} className="text-[#F27D26]" />
-          </div>
-
-          {/* Player search */}
-          <div className="relative mb-4">
-            <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">Player</p>
-            <input
-              value={search}
-              onChange={e => { setSearch(e.target.value); setSelected(null); setShowDropdown(true); }}
-              onFocus={() => setShowDropdown(true)}
-              placeholder={hasFAList ? 'Search available players…' : 'Type player name…'}
-              className="w-full bg-white/10 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#F27D26] placeholder:opacity-30"
-            />
-            {showDropdown && searchResults.length > 0 && (
-              <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-[#1e1e1e] border border-white/10 rounded-lg overflow-hidden shadow-xl">
-                {searchResults.map((p, i) => (
-                  <button
-                    key={i}
-                    onMouseDown={() => handleSelect(p)}
-                    className="w-full text-left px-4 py-2.5 text-sm hover:bg-white/10 flex justify-between items-center gap-2"
-                  >
-                    <span>{p.name}</span>
-                    <span className="text-[10px] opacity-50">{p.pos.join(',')} · {p.mlbTeam}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {!hasFAList && (
-              <p className="text-[10px] opacity-40 mt-1 italic">
-                Upload "Available Players" CSV in Strategy Lab to enable player search.
-              </p>
-            )}
-          </div>
-
-          {/* Auto-detected type — still overridable */}
-          <div className="mb-4">
-            <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">
-              Type {selected && <span className="text-[#F27D26] not-uppercase">(auto-detected)</span>}
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {(Object.keys(TYPE_LABELS) as PlayerType[]).map(t => (
-                <button
-                  key={t}
-                  onClick={() => setPlayerType(t)}
-                  className={`text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-lg transition-all ${
-                    playerType === t ? 'bg-[#F27D26] text-white' : 'bg-white/10 text-white/50 hover:bg-white/20'
-                  }`}
-                >
-                  {TYPE_LABELS[t]}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="mb-6">
-            <p className="text-[10px] uppercase opacity-50 mb-2 tracking-widest">Impact Level</p>
-            <div className="flex flex-col gap-1">
-              {(Object.keys(TIER_LABELS) as BidTier[]).map(t => (
-                <button
-                  key={t}
-                  onClick={() => setBidTier(t)}
-                  className={`text-xs font-medium px-3 py-2 rounded-lg text-left transition-all ${
-                    bidTier === t ? 'bg-[#F27D26]/20 border border-[#F27D26]/50' : 'hover:bg-white/5'
-                  }`}
-                >
-                  {TIER_LABELS[t]}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Output */}
-          <div className="bg-white/5 rounded-xl p-4 border border-white/10">
-            <p className="text-[10px] uppercase opacity-50 mb-3 tracking-widest">
-              {search || 'Player'} · {TYPE_LABELS[playerType]} · {TIER_LABELS[bidTier]}
-            </p>
-            <div className="flex justify-between items-end mb-2">
-              <div>
-                <p className="text-[10px] opacity-40">Range</p>
-                <p className="font-mono text-sm">${bid.min} – ${bid.max}</p>
-              </div>
-              <div className="text-right">
-                <p className="text-[10px] opacity-40">Suggested</p>
-                <p className="font-mono text-3xl text-[#F27D26]">${bid.suggested}</p>
-              </div>
-            </div>
-            <p className="text-[10px] opacity-50 italic">{bid.reason}</p>
-          </div>
-        </div>
-
-        {/* Waiver Priorities */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
-          <h3 className="font-serif italic text-xl mb-1">
-            Waiver Priorities
-            {categoryStandings && (
-              <span className="ml-2 text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold not-italic">Live</span>
-            )}
-          </h3>
-          <p className="text-xs opacity-40 mb-4">Based on your weakest scoring categories</p>
-          {weakCats.length > 0 ? (
-            <ul className="flex flex-col gap-3 mb-4">
-              {weakCats.slice(0, 4).map((c, i) => (
-                <li key={i} className="flex gap-3 text-sm">
-                  <span className="w-12 shrink-0 text-[10px] font-bold bg-orange-50 text-orange-600 px-2 py-1 rounded text-center">{c.category}</span>
-                  <span className="opacity-80">
-                    Ranked <strong>#{c.myRank}</strong> of {c.totalTeams} — {c.ptsGapToNext.toFixed(1)} pts behind #{c.myRank - 1}.
-                    Target {(catToTypes[c.category] ?? []).join('/') || c.category} producers on wire.
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <ul className="flex flex-col gap-4 mb-4">
-              {[
-                'Prioritize SP depth — Senga and Boyd are injury risks.',
-                'Save FAAB for mid-season closer churn.',
-                'Monitor 3B/OBP if Okamoto struggles early.',
-              ].map((p, i) => (
-                <li key={i} className="flex gap-3 text-sm">
-                  <ChevronRight size={16} className="text-[#F27D26] shrink-0 mt-0.5" />
-                  <span className="opacity-80">{p}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-          <p className="text-[10px] opacity-40 italic">
-            Upload current standings CSV to see live category rankings.
-          </p>
-        </div>
-      </div>
-
-      {/* Weekly Targets */}
-      {(faTargets.length > 0 || tradeTargets.length > 0) && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* FAAB targets */}
-          {faTargets.length > 0 && (
-            <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
-              <div className="px-6 py-4 border-b border-black/5 flex justify-between items-center">
-                <h3 className="font-serif italic text-xl">
-                  FA Targets
-                  {hasFAList && <span className="ml-2 text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold not-italic">From Upload</span>}
-                </h3>
-                <Target size={16} className="opacity-30" />
-              </div>
-              <div className="divide-y divide-black/5">
-                {faTargets.map((p, i) => {
-                  const t = inferPlayerType(p.pos);
-                  const quickBid = calcBid(t, 'contributor', faabBudget, categoryStandings);
-                  return (
-                    <div key={i} className="px-6 py-3 flex justify-between items-center hover:bg-[#F8F8F8] transition-colors">
-                      <div>
-                        <p className="text-sm font-medium">{p.name}</p>
-                        <p className="text-[11px] opacity-50">{p.pos.join(',')} · {p.mlbTeam}</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-mono text-sm text-[#F27D26]">${quickBid.suggested}</p>
-                        <p className="text-[10px] opacity-40">suggested bid</p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Trade targets from other rosters */}
-          {tradeTargets.length > 0 && (
-            <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
-              <div className="px-6 py-4 border-b border-black/5 flex justify-between items-center">
-                <h3 className="font-serif italic text-xl">Trade Targets</h3>
-                <ArrowLeftRight size={16} className="opacity-30" />
-              </div>
-              <div className="divide-y divide-black/5">
-                {tradeTargets.map(({ player: p, team }, i) => (
-                  <div key={i} className="px-6 py-3 flex justify-between items-center hover:bg-[#F8F8F8] transition-colors">
-                    <div>
-                      <p className="text-sm font-medium">{p.name}</p>
-                      <p className="text-[11px] opacity-50">{p.pos.join(',')} · {p.mlbTeam}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs font-bold text-gray-600">{team}</p>
-                      {p.salary > 0 && <p className="text-[10px] opacity-40">${p.salary}</p>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* No data nudge */}
-      {!hasFAList && !leagueRoster && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-4 text-sm text-amber-800 flex gap-3 items-start">
-          <AlertTriangle size={16} className="shrink-0 mt-0.5" />
-          <div>
-            <p className="font-semibold mb-1">Upload data for smarter recommendations</p>
-            <p className="opacity-70">Go to <strong>Strategy Lab</strong> and upload the League Roster CSV to see FA targets and trade candidates. For the best bid accuracy, also upload the Available Players list from CBS.</p>
-          </div>
-        </div>
-      )}
-
-      {/* Transaction Log */}
-      {transactions && transactions.length > 0 && (
-        <TransactionLog transactions={transactions} />
-      )}
-
-      {/* Legacy FAAB Bid Log */}
-      {parsedFaab && parsedFaab.length > 0 && !transactions && (
-        <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
-          <div className="px-6 py-4 border-b border-black/5">
-            <h3 className="font-serif italic text-xl">FAAB Bid Log <span className="text-sm opacity-40 font-sans not-italic">({parsedFaab.length})</span></h3>
-          </div>
-          <div className="grid grid-cols-[1.5fr_0.8fr_1fr_0.6fr_0.6fr] gap-2 px-6 py-2 bg-[#F8F8F8] border-b border-black/10 text-[10px]">
-            <span>Player</span><span>Date</span><span>Team</span><span>Bid</span><span>Result</span>
-          </div>
-          <div className="max-h-80 overflow-y-auto">
-            {parsedFaab.slice(0, 50).map((entry, i) => (
-              <div key={i} className="grid grid-cols-[1.5fr_0.8fr_1fr_0.6fr_0.6fr] gap-2 px-6 py-2.5 border-b border-black/5 items-center hover:bg-[#F8F8F8] transition-colors">
-                <span className="text-sm font-medium">{entry.player}</span>
-                <span className="text-xs opacity-50 font-mono">{entry.date}</span>
-                <span className="text-xs opacity-70">{entry.team}</span>
-                <span className="font-mono text-sm">${entry.bid}</span>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit ${entry.result === 'Won' ? 'text-green-700 bg-green-50' : 'text-gray-500 bg-gray-50'}`}>{entry.result}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Data freshness footer */}
-      <div className="border-t border-black/5 pt-4 flex flex-wrap gap-x-6 gap-y-1">
-        <p className="text-[10px] uppercase tracking-widest opacity-30 w-full mb-1">Data last updated</p>
-        {tsEntries.length === 0 ? (
-          <p className="text-[10px] opacity-40 italic">No data loaded yet — upload files in Strategy Lab.</p>
-        ) : (
-          tsEntries.map(([type, iso]) => (
-            <span key={type} className="text-[10px] opacity-50">
-              <span className="font-semibold capitalize">{type === 'leagueroster' ? 'Rosters' : type === 'freeagents' ? 'FA List' : type.charAt(0).toUpperCase() + type.slice(1)}:</span>{' '}
-              {fmtTs(iso)}
-            </span>
-          ))
-        )}
-        <span className="text-[10px] opacity-30 ml-auto italic">
-          Waivers run Sun · Wed · Fri
-        </span>
-      </div>
-    </motion.div>
   );
 }
 
@@ -1777,171 +1828,6 @@ function StrategyLabView({
         </>
       )}
 
-    </motion.div>
-  );
-}
-
-// ─── Keeper Calculator ────────────────────────────────────────────────────────
-
-type KeeperItem = {
-  player: Player;
-  projValue: number;
-  discount: number;
-  keeping: boolean;
-};
-
-function KeeperView({ roster, leagueDetails }: { roster: Player[]; leagueDetails: LeagueDetails | null; key?: any }) {
-  const salaryCap = leagueDetails?.salaryCap || 260;
-  const activeRosterSize = leagueDetails?.rosterRules.active || 22;
-
-  const [projections, setProjections] = useState<Record<string, number>>(() =>
-    Object.fromEntries(roster.map(p => [p.name, KEEPER_PROJECTIONS[p.name] ?? 0]))
-  );
-  const [keepDecisions, setKeepDecisions] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(
-      roster
-        .filter(p => p.contract.startsWith('K') || p.contract.startsWith('M'))
-        .map(p => [p.name, true])
-    )
-  );
-  const [sortBy, setSortBy] = useState<'discount' | 'salary' | 'value'>('discount');
-
-  const buildItems = (players: Player[]): KeeperItem[] =>
-    players
-      .map(p => ({
-        player: p,
-        projValue: projections[p.name] ?? 0,
-        discount: (projections[p.name] ?? 0) - p.salary,
-        keeping: keepDecisions[p.name] ?? true,
-      }))
-      .sort((a, b) =>
-        sortBy === 'salary' ? a.player.salary - b.player.salary :
-        sortBy === 'value'  ? b.projValue - a.projValue :
-        b.discount - a.discount
-      );
-
-  const kItems  = buildItems(roster.filter(p => p.contract.startsWith('K')));
-  const mItems  = buildItems(roster.filter(p => p.contract.startsWith('M')));
-  const allKept = [...kItems, ...mItems].filter(k => k.keeping);
-
-  const totalKeeperSalary = allKept.reduce((s, k) => s + k.player.salary, 0);
-  const remainingCap      = salaryCap - totalKeeperSalary;
-  const auctionSpots      = Math.max(0, activeRosterSize - allKept.length);
-  const avgPerSpot        = auctionSpots > 0 ? remainingCap / auctionSpots : 0;
-  const totalDiscount     = kItems.filter(k => k.keeping).reduce((s, k) => s + Math.max(0, k.discount), 0);
-
-  const verdict = (item: KeeperItem, isMinors: boolean) => {
-    if (isMinors)            return { label: 'Auto-Keep',    cls: 'text-green-700 bg-green-50'   };
-    if (item.discount >= 15) return { label: 'Strong Keep',  cls: 'text-green-700 bg-green-50'   };
-    if (item.discount >= 5)  return { label: 'Keep',         cls: 'text-emerald-600 bg-emerald-50'};
-    if (item.discount >= 0)  return { label: 'Borderline',   cls: 'text-yellow-700 bg-yellow-50' };
-    return                          { label: 'Release',      cls: 'text-red-600 bg-red-50'       };
-  };
-
-  const Row = ({ item, isMinors }: { item: KeeperItem; isMinors: boolean }) => {
-    const v = verdict(item, isMinors);
-    return (
-      <div className={`keeper-row group ${!item.keeping ? 'opacity-35' : ''}`}>
-        <div className="flex items-center">
-          <input
-            type="checkbox"
-            checked={item.keeping}
-            onChange={e => setKeepDecisions(prev => ({ ...prev, [item.player.name]: e.target.checked }))}
-            className="w-4 h-4 accent-[#F27D26] cursor-pointer"
-          />
-        </div>
-        <div>
-          <p className="text-sm font-medium leading-tight">{item.player.name}</p>
-          <p className="text-[10px] opacity-40">{item.player.pos.join('/')} · {item.player.team}</p>
-        </div>
-        <span className="text-xs font-bold opacity-50">{item.player.contract}</span>
-        <span className="font-mono text-sm">${item.player.salary}</span>
-        <EditableValue
-          value={item.projValue}
-          onChange={v => setProjections(prev => ({ ...prev, [item.player.name]: v }))}
-        />
-        <span className={`font-mono text-sm font-bold ${item.discount >= 10 ? 'text-green-600' : item.discount >= 0 ? 'text-yellow-600' : 'text-red-500'}`}>
-          {item.discount > 0 ? '+' : ''}{item.discount}
-        </span>
-        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit ${v.cls}`}>{v.label}</span>
-      </div>
-    );
-  };
-
-  const TableShell = ({ title, items, isMinors }: { title: string; items: KeeperItem[]; isMinors: boolean }) => (
-    <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
-      <div className="px-6 py-4 border-b border-black/5 flex justify-between items-center">
-        <h3 className="font-serif italic text-xl">{title} <span className="text-sm opacity-40 font-sans not-italic">({items.length})</span></h3>
-        {!isMinors && <p className="text-[10px] opacity-40 italic">Click projected value to edit</p>}
-      </div>
-      <div className="keeper-row bg-[#F8F8F8] border-b border-black/10">
-        <span />
-        <span className="col-header">Player</span>
-        <span className="col-header">Yr</span>
-        <span className="col-header">Keep $</span>
-        <span className="col-header">Proj $</span>
-        <span className="col-header">+/−</span>
-        <span className="col-header">Verdict</span>
-      </div>
-      <div className="max-h-[520px] overflow-y-auto">
-        {items.map((item, i) => <Row key={`${item.player.id}-${i}`} item={item} isMinors={isMinors} />)}
-      </div>
-    </div>
-  );
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -20 }}
-      className="flex flex-col gap-8"
-    >
-      <header className="flex justify-between items-end">
-        <div>
-          <h2 className="text-4xl font-serif italic mb-2">Keeper Calculator</h2>
-          <p className="text-sm opacity-60">Cap impact · keeper discount · auction budget</p>
-        </div>
-        <div className="flex gap-2">
-          {(['discount', 'salary', 'value'] as const).map(s => (
-            <button
-              key={s}
-              onClick={() => setSortBy(s)}
-              className={`text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-lg transition-all ${
-                sortBy === s ? 'bg-[#141414] text-white' : 'bg-white border border-black/10 opacity-60 hover:opacity-100'
-              }`}
-            >
-              {s === 'discount' ? 'By Discount' : s === 'salary' ? 'By Salary' : 'By Value'}
-            </button>
-          ))}
-        </div>
-      </header>
-
-      {/* Cap Summary */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-[#141414] text-white p-5 rounded-2xl">
-          <p className="text-[10px] uppercase opacity-50 mb-1 tracking-widest">Keeper Salary</p>
-          <p className="text-3xl font-mono">${totalKeeperSalary}</p>
-          <p className="text-[10px] opacity-40 mt-1">of ${salaryCap} cap</p>
-        </div>
-        <div className={`p-5 rounded-2xl border ${remainingCap < 60 ? 'bg-red-50 border-red-200' : 'bg-white border-black/5'}`}>
-          <p className="text-[10px] uppercase opacity-50 mb-1 tracking-widest">Auction Budget</p>
-          <p className={`text-3xl font-mono ${remainingCap < 60 ? 'text-red-600' : ''}`}>${remainingCap}</p>
-          <p className="text-[10px] opacity-40 mt-1">for {auctionSpots} remaining spots</p>
-        </div>
-        <div className="bg-white p-5 rounded-2xl border border-black/5">
-          <p className="text-[10px] uppercase opacity-50 mb-1 tracking-widest">Avg Per Spot</p>
-          <p className="text-3xl font-mono">${avgPerSpot.toFixed(0)}</p>
-          <p className="text-[10px] opacity-40 mt-1">{auctionSpots} open auction slots</p>
-        </div>
-        <div className="bg-[#F27D26] text-white p-5 rounded-2xl">
-          <p className="text-[10px] uppercase opacity-50 mb-1 tracking-widest">Total Discount</p>
-          <p className="text-3xl font-mono">+${totalDiscount}</p>
-          <p className="text-[10px] opacity-40 mt-1">vs. open auction prices</p>
-        </div>
-      </div>
-
-      <TableShell title="Active Keepers" items={kItems} isMinors={false} />
-      {mItems.length > 0 && <TableShell title="Minor League Keepers" items={mItems} isMinors={true} />}
     </motion.div>
   );
 }
