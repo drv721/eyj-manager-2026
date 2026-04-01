@@ -239,7 +239,10 @@ export default function App() {
 
         <div className="mt-auto pt-8 border-t border-white/10">
           <div className="flex justify-between items-center mb-4">
-            <span className="text-[10px] uppercase opacity-50">FAAB Budget</span>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[10px] uppercase opacity-50">FAAB Budget</span>
+              <span className="text-[10px] opacity-25 italic">click to edit</span>
+            </div>
             <EditableSidebarValue value={faabBudget} onChange={setFaabBudget} prefix="$" />
           </div>
           <div className="flex justify-between items-center">
@@ -942,13 +945,13 @@ function AddDropPanel({
     setShowDropdown(false);
   };
 
-  // Bid calc (simplified version of FAABView logic)
-  const TIER_LABELS: Record<BidTier, string> = { stash: 'Stash', streamer: 'Streamer', contributor: 'Contributor', starter: 'Starter' };
+  // Bid calc — $120 FAAB roto context: most adds are $1-15, only elite pickups exceed $20
+  const TIER_LABELS: Record<BidTier, string> = { stash: 'Stash ($1-4)', streamer: 'Streamer ($4-8)', contributor: 'Contributor ($8-14)', starter: 'Starter ($15+)' };
   const BASE_BIDS: Record<PlayerType, Record<BidTier, number>> = {
-    sp:    { stash: 5,  streamer: 12, contributor: 22, starter: 38 },
-    rp:    { stash: 8,  streamer: 15, contributor: 25, starter: 40 },
-    power: { stash: 5,  streamer: 10, contributor: 20, starter: 35 },
-    speed: { stash: 6,  streamer: 12, contributor: 22, starter: 36 },
+    sp:    { stash: 2, streamer: 5, contributor: 10, starter: 18 },
+    rp:    { stash: 3, streamer: 6, contributor: 11, starter: 20 },
+    power: { stash: 2, streamer: 4, contributor:  9, starter: 16 },
+    speed: { stash: 2, streamer: 5, contributor: 10, starter: 17 },
   };
 
   const weakCats = categoryStandings
@@ -958,16 +961,17 @@ function AddDropPanel({
   const baseBid = BASE_BIDS[playerType][bidTier];
   const bid = Math.min(faabBudget - 1, Math.round(baseBid * urgencyMult));
 
-  // Drop candidates: lowest-value active non-keeper players
+  // Potential drops: N-contract active players only, sorted by lowest projected value
+  // Excludes K/F contract players entirely — never drop a keeper
   const activePlayers = roster.filter(p => !p.isMinor && !p.isReserve);
   const dropCandidates = activePlayers
-    .filter(p => !p.contract.match(/^(K[123]|F)$/))
+    .filter(p => p.contract === 'N')
     .map(p => ({
       player: p,
-      projValue: KEEPER_PROJECTIONS[p.name] ?? Math.round(p.salary * 0.7),
-      overpaid: p.salary - (KEEPER_PROJECTIONS[p.name] ?? Math.round(p.salary * 0.7)),
+      projValue: KEEPER_PROJECTIONS[p.name] ?? Math.round(p.salary * 0.6),
     }))
-    .sort((a, b) => b.overpaid - a.overpaid)
+    .filter(({ projValue }) => projValue < 20)
+    .sort((a, b) => a.projValue - b.projValue)
     .slice(0, 5);
 
   return (
@@ -1038,12 +1042,12 @@ function AddDropPanel({
         </div>
       </div>
 
-      {/* Drop Candidates */}
+      {/* Potential Drops */}
       <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-6">
-        <h3 className="font-serif italic text-xl mb-1">Drop Candidates</h3>
-        <p className="text-xs opacity-50 mb-4">Non-keeper players sorted by salary vs. projected value</p>
+        <h3 className="font-serif italic text-xl mb-1">Potential Drops</h3>
+        <p className="text-xs opacity-50 mb-4">N-contract active players with lowest projected value — use judgment on injury/role/slump</p>
         <div className="flex flex-col gap-2">
-          {dropCandidates.map(({ player: p, projValue, overpaid }) => (
+          {dropCandidates.map(({ player: p, projValue }) => (
             <div key={p.id} className="flex items-center gap-3 p-3 bg-[#F8F8F8] rounded-xl">
               <span className="text-[10px] font-bold bg-white rounded px-1.5 py-0.5 border border-black/5">{p.pos.join('/')}</span>
               <div className="flex-1 min-w-0">
@@ -1052,17 +1056,15 @@ function AddDropPanel({
               </div>
               <div className="text-right shrink-0">
                 <p className="font-mono text-sm">${p.salary}</p>
-                <p className={`text-[10px] font-bold ${overpaid > 5 ? 'text-red-500' : overpaid > 0 ? 'text-orange-500' : 'text-green-600'}`}>
-                  {overpaid > 0 ? `$${overpaid} over` : `$${Math.abs(overpaid)} under`}
-                </p>
+                <p className="text-[10px] opacity-50">~${projValue} proj</p>
               </div>
             </div>
           ))}
           {dropCandidates.length === 0 && (
-            <p className="text-sm opacity-40 text-center py-4">All non-keeper players look reasonably priced</p>
+            <p className="text-sm opacity-40 text-center py-4">No obvious drop candidates on active roster</p>
           )}
         </div>
-        <p className="text-[10px] opacity-30 mt-4 italic">*Based on KEEPER_PROJECTIONS. K/F contract players excluded.</p>
+        <p className="text-[10px] opacity-30 mt-4 italic">*Keeper-contract players never shown. Injury, role loss, or sustained slump should drive actual drop decisions.</p>
       </div>
     </div>
   );
@@ -1656,6 +1658,10 @@ function StrategyLabView({
 
   const effectiveRoster = parsedRoster && parsedRoster.length > 0 ? parsedRoster : INITIAL_ROSTER;
   const lastN = (name: string) => name.toLowerCase().split(' ').slice(-1)[0].replace(/[^a-z]/g, '');
+  const nameMatch = (a: string, b: string) => {
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z ]/g, '').trim();
+    return norm(a) === norm(b) || lastN(a) === lastN(b);
+  };
 
   return (
     <motion.div
@@ -1665,7 +1671,7 @@ function StrategyLabView({
     >
       <header>
         <h2 className="text-4xl font-serif italic mb-2">Strategy Lab</h2>
-        <p className="text-sm opacity-60">Cap efficiency · process metrics · regression signals</p>
+        <p className="text-sm opacity-60">Cap efficiency · sabermetric signals · regression watch</p>
       </header>
 
       <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold -mb-4">Cap &amp; Market Efficiency</p>
@@ -1700,7 +1706,7 @@ function StrategyLabView({
         {/* Process Leaders */}
         <div className="bg-[#141414] text-white p-6 rounded-2xl shadow-lg">
           <div className="flex justify-between items-center mb-6">
-            <h3 className="font-serif italic text-xl">Process Leaders</h3>
+            <h3 className="font-serif italic text-xl">Sabermetric Leaders</h3>
             <Zap size={18} className="text-[#F27D26]" />
           </div>
           <div className="flex flex-col gap-6">
@@ -1772,14 +1778,13 @@ function StrategyLabView({
         </div>
       </div>
 
-      {/* Regression Watch */}
-      {(parsedStuff || parsedStatcast) && (
-        <>
-        <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold -mb-4">Process Metrics</p>
+      {/* Regression Watch — always visible */}
+      <>
+        <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold -mb-4">Regression Watch</p>
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
           <div className="flex justify-between items-center mb-5">
             <h3 className="font-serif italic text-xl">Regression Watch</h3>
-            <span className="text-[10px] opacity-40 italic">Your roster vs. process metrics</span>
+            <span className="text-[10px] opacity-40 italic">Your roster vs. Stuff+ / xwOBA</span>
           </div>
 
           {parsedStuff && (
@@ -1795,7 +1800,7 @@ function StrategyLabView({
               {effectiveRoster
                 .filter(p => p.pos.some(pos => ['SP', 'RP', 'P'].includes(pos)) && !p.isMinor)
                 .map(p => {
-                  const match = parsedStuff.find(d => lastN(d.name) === lastN(p.name));
+                  const match = parsedStuff.find(d => nameMatch(d.name, p.name));
                   if (!match || (!match.stuffPlus && !match.pitchingPlus)) return null;
                   const gap = (match.pitchingPlus || 0) - (match.stuffPlus || 0);
                   const sig = gap > 8  ? { label: 'Sell window',  cls: 'text-orange-600 bg-orange-50' }
@@ -1832,7 +1837,7 @@ function StrategyLabView({
               {effectiveRoster
                 .filter(p => !p.pos.some(pos => ['SP', 'RP', 'P'].includes(pos)) && !p.isMinor)
                 .map(p => {
-                  const match = parsedStatcast.find(d => lastN(d.name) === lastN(p.name));
+                  const match = parsedStatcast.find(d => nameMatch(d.name, p.name));
                   if (!match || (!match.ev && !match.xwoba)) return null;
                   const xw = match.xwoba || 0;
                   const sig = xw > 0.380 ? { label: 'Elite process',  cls: 'text-green-700 bg-green-50'   }
@@ -1854,9 +1859,14 @@ function StrategyLabView({
                 }).filter(Boolean)}
             </div>
           )}
+          {!parsedStuff && !parsedStatcast && (
+            <div className="text-center py-8 opacity-40">
+              <p className="text-sm mb-1">No advanced data loaded yet.</p>
+              <p className="text-xs">Upload Stuff+ (FanGraphs) and/or Statcast (Baseball Savant) CSVs in the Data tab to see regression signals for your pitchers and hitters.</p>
+            </div>
+          )}
         </div>
-        </>
-      )}
+      </>
 
     </motion.div>
   );
@@ -2230,13 +2240,23 @@ function DataView({
     {
       type: 'statcast' as DataType,
       label: 'Statcast (Baseball Savant)',
-      desc: 'Leaderboards → Statcast Batting. Filter to min 100 PA. Export CSV.',
+      url: 'https://baseballsavant.mlb.com/statcast_leaderboard',
+      steps: [
+        '1. Click the link above → Baseball Savant Statcast Leaderboard',
+        '2. Set Year = 2026, Min PA = 50 (or higher)',
+        '3. Hit Search, then scroll to bottom → "Export to CSV"',
+      ],
       icon: '⚾',
     },
     {
       type: 'stuff' as DataType,
       label: 'Stuff+ / Pitching+ (FanGraphs)',
-      desc: 'Leaders → Pitching → "+ Stats" preset. Min 10 IP. Export CSV.',
+      url: 'https://www.fangraphs.com/leaders/major-league?pos=p&stats=pit&lg=all&qual=10&type=36',
+      steps: [
+        '1. Click the link above → FanGraphs Pitching Leaders (+ Stats preset)',
+        '2. Set Min IP = 10 in the qualifier dropdown',
+        '3. Scroll to bottom → click the CSV export icon',
+      ],
       icon: '🔥',
     },
   ];
@@ -2415,11 +2435,19 @@ function DataView({
               <div key={src.type} className={`bg-white rounded-2xl border p-5 flex gap-4 ${loaded ? 'border-green-200' : 'border-black/5'}`}>
                 <span className="text-2xl shrink-0">{src.icon}</span>
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <p className="text-sm font-bold">{src.label}</p>
-                    {loaded && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">✓ Loaded</span>}
+                  <div className="flex items-center gap-2 mb-2">
+                    <a href={src.url} target="_blank" rel="noopener noreferrer"
+                      className="text-sm font-bold hover:text-[#F27D26] transition-colors flex items-center gap-1 group">
+                      {src.label}
+                      <ExternalLink size={11} className="opacity-40 group-hover:opacity-80 transition-opacity" />
+                    </a>
+                    {loaded && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold shrink-0">✓ Loaded</span>}
                   </div>
-                  <p className="text-xs opacity-60 leading-relaxed mb-2">{src.desc}</p>
+                  <ol className="flex flex-col gap-1 mb-3">
+                    {src.steps.map((step, i) => (
+                      <li key={i} className="text-xs opacity-60 leading-relaxed">{step}</li>
+                    ))}
+                  </ol>
                   {loaded && ts && <p className="text-[10px] opacity-40 font-mono mb-2">{formatTs(ts)}</p>}
                   <button
                     onClick={() => openForcedUpload(src.type, true)}

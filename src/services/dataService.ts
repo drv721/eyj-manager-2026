@@ -364,20 +364,32 @@ export function parseLeagueRoster(csvText: string): Record<string, LeaguePlayer[
 
     // Detect team section headers: "EffYouJobu Batters" / "EffYouJobu Pitchers"
     if (row.slice(1).every(v => !v || !String(v).trim())) {
-      let matched = false;
-      for (const [fullName, abbrev] of Object.entries(TEAM_ABBREV)) {
-        if (firstVal === `${fullName} Batters` || firstVal === `${fullName} Pitchers`) {
-          currentAbbrev = abbrev;
-          currentStatus = 'active';
-          if (!result[abbrev]) result[abbrev] = [];
-          matched = true;
-          break;
-        }
-      }
-      if (matched) continue;
+      // Sub-section markers (can appear inside a team block)
       if (firstVal === 'Reserves') { currentStatus = 'reserve'; continue; }
       if (firstVal === 'Injured')  { currentStatus = 'injured'; continue; }
       if (firstVal === 'Minors')   { currentStatus = 'minor';   continue; }
+
+      // Team section header: "TeamName Batters" or "TeamName Pitchers"
+      const isBatters  = firstVal.endsWith(' Batters');
+      const isPitchers = firstVal.endsWith(' Pitchers');
+      if (isBatters || isPitchers) {
+        const teamPart = firstVal.replace(/ (Batters|Pitchers)$/, '').trim();
+        const normStr  = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+        // 1) Exact match
+        let abbrev: string | undefined = TEAM_ABBREV[teamPart];
+        if (!abbrev) {
+          // 2) Fuzzy match (handles spacing / punctuation variants)
+          const entry = Object.entries(TEAM_ABBREV).find(([k]) => normStr(k) === normStr(teamPart));
+          if (entry) abbrev = entry[1];
+        }
+        if (!abbrev) {
+          // 3) Fallback: derive abbreviation from the team name itself
+          abbrev = teamPart.replace(/\s+/g, '').slice(0, 6).toUpperCase();
+        }
+        currentAbbrev = abbrev;
+        currentStatus = 'active';
+        if (!result[abbrev]) result[abbrev] = [];
+      }
       continue;
     }
 
@@ -564,11 +576,12 @@ export function parseFreeAgents(csvText: string): LeaguePlayer[] {
     }
 
     // Standard FA export: col 0 is availability ("W ( 4/2)", "FA", etc.), col 1 is player
-    // Skip rows where col 0 doesn't look like availability data
-    if (!col0.match(/^(W|FA|Avail)/i) && !col0.match(/^\d{1,2}\/\d{1,2}/)) continue;
+    // Use tight pattern to avoid matching stat abbreviations like "WHIP", "WAR", etc.
+    if (!col0.match(/^W\s*[\(\s]|^FA\b|^Avail\b/i)) continue;
 
     const playerRaw = col1;
-    if (!playerRaw || playerRaw.toLowerCase() === 'player') continue;
+    // Require " | " team separator — filters header rows and junk
+    if (!playerRaw || !playerRaw.includes(' | ') || playerRaw.toLowerCase() === 'player') continue;
 
     const pipeIdx = playerRaw.indexOf(' | ');
     const mlbTeam = pipeIdx >= 0 ? playerRaw.slice(pipeIdx + 3).trim() : '';
