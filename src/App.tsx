@@ -114,7 +114,13 @@ export default function App() {
     } else if (type === 'transactions') {
       setTransactions(mapTransactionData(rawData));
     } else if (type === 'freeagents') {
-      setFreeAgents(parseFreeAgents(csvText));
+      const incoming = parseFreeAgents(csvText);
+      // Merge with existing list, deduplicating by name — safe to upload batters + pitchers separately or together
+      setFreeAgents(prev => {
+        const existingNames = new Set(prev.map(p => p.name));
+        const newPlayers = incoming.filter(p => !existingNames.has(p.name));
+        return [...prev, ...newPlayers];
+      });
     }
     if (type !== 'unknown') {
       setDataTimestamps(prev => ({ ...prev, [type]: new Date().toISOString() }));
@@ -300,6 +306,7 @@ export default function App() {
               key="data"
               onDataLoaded={applyParsedData}
               onResetData={handleResetData}
+              onClearFreeAgents={() => { setFreeAgents([]); localStorage.removeItem('eyj_freeagents'); }}
               dataTimestamps={dataTimestamps}
               parsedRoster={parsedRoster}
               parsedStandings={parsedStandings}
@@ -2057,6 +2064,7 @@ function AnalyticsView({ categoryStandings, faabBudget }: { categoryStandings: L
 function DataView({
   onDataLoaded,
   onResetData,
+  onClearFreeAgents,
   dataTimestamps,
   parsedRoster,
   parsedStandings,
@@ -2069,6 +2077,7 @@ function DataView({
 }: {
   onDataLoaded: (type: DataType, rawData: any[], csvText: string) => void;
   onResetData: () => void;
+  onClearFreeAgents?: () => void;
   dataTimestamps: Record<string, string>;
   parsedRoster: Player[] | null;
   parsedStandings: HistoricalStanding[] | null;
@@ -2112,8 +2121,10 @@ function DataView({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // Load files immediately with a forced data type — bypasses auto-detection and staging
-  const loadFilesForced = async (files: FileList | File[], forceType: DataType) => {
+  // Load files immediately with a forced data type — bypasses auto-detection and staging.
+  // clearFirst: wipe existing freeagents before loading (used by Re-upload button).
+  const loadFilesForced = async (files: FileList | File[], forceType: DataType, clearFirst = false) => {
+    if (clearFirst && forceType === 'freeagents') onClearFreeAgents?.();
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (!file.name.match(/\.(csv|txt)$/i)) continue;
@@ -2128,14 +2139,17 @@ function DataView({
     if (forcedFileInputRef.current) forcedFileInputRef.current.value = '';
   };
 
-  const openForcedUpload = (type: DataType) => {
+  const forcedClearRef = useRef(false);
+
+  const openForcedUpload = (type: DataType, clearFirst = false) => {
     forcedTypeRef.current = type;
+    forcedClearRef.current = clearFirst;
     forcedFileInputRef.current?.click();
   };
 
   const handleForcedFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length && forcedTypeRef.current) {
-      loadFilesForced(e.target.files, forcedTypeRef.current);
+      loadFilesForced(e.target.files, forcedTypeRef.current, forcedClearRef.current);
     }
   };
 
@@ -2353,23 +2367,36 @@ function DataView({
           {CBS_SOURCES.map(src => {
             const statusEntry = dataStatus.find(d => d.key === src.type);
             const loaded = statusEntry?.active;
+            const count = statusEntry?.count;
             const ts = dataTimestamps[src.type];
+            const isFa = src.type === 'freeagents';
             return (
               <div key={src.type} className={`bg-white rounded-2xl border p-5 flex gap-4 ${loaded ? 'border-green-200' : 'border-black/5'}`}>
                 <span className="text-2xl shrink-0">{src.icon}</span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <p className="text-sm font-bold">{src.label}</p>
-                    {loaded && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">✓ Loaded</span>}
+                    {loaded && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">✓ {count ?? 'Loaded'}</span>}
                   </div>
                   <p className="text-xs opacity-60 leading-relaxed mb-2">{src.desc}</p>
+                  {isFa && loaded && <p className="text-[10px] opacity-50 mb-2">CBS exports batters &amp; pitchers separately — upload both to combine them.</p>}
                   {loaded && ts && <p className="text-[10px] opacity-40 font-mono mb-2">{formatTs(ts)}</p>}
-                  <button
-                    onClick={() => openForcedUpload(src.type)}
-                    className={`text-[10px] font-bold px-3 py-1.5 rounded-lg uppercase tracking-widest transition-colors ${loaded ? 'bg-black/5 text-black/50 hover:bg-black/10' : 'bg-[#F27D26] text-white hover:bg-[#d96a1d]'}`}
-                  >
-                    {loaded ? 'Re-upload' : 'Upload CSV'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => openForcedUpload(src.type, !isFa)}
+                      className={`text-[10px] font-bold px-3 py-1.5 rounded-lg uppercase tracking-widest transition-colors ${loaded ? 'bg-black/5 text-black/50 hover:bg-black/10' : 'bg-[#F27D26] text-white hover:bg-[#d96a1d]'}`}
+                    >
+                      {isFa && loaded ? 'Add More' : loaded ? 'Re-upload' : 'Upload CSV'}
+                    </button>
+                    {isFa && loaded && (
+                      <button
+                        onClick={() => { onClearFreeAgents?.(); openForcedUpload('freeagents', false); }}
+                        className="text-[10px] font-bold px-3 py-1.5 rounded-lg uppercase tracking-widest bg-red-50 text-red-400 hover:bg-red-100 transition-colors"
+                      >
+                        Replace
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             );
@@ -2395,7 +2422,7 @@ function DataView({
                   <p className="text-xs opacity-60 leading-relaxed mb-2">{src.desc}</p>
                   {loaded && ts && <p className="text-[10px] opacity-40 font-mono mb-2">{formatTs(ts)}</p>}
                   <button
-                    onClick={() => openForcedUpload(src.type)}
+                    onClick={() => openForcedUpload(src.type, true)}
                     className={`text-[10px] font-bold px-3 py-1.5 rounded-lg uppercase tracking-widest transition-colors ${loaded ? 'bg-black/5 text-black/50 hover:bg-black/10' : 'bg-[#F27D26] text-white hover:bg-[#d96a1d]'}`}
                   >
                     {loaded ? 'Re-upload' : 'Upload CSV'}
