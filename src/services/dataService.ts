@@ -14,8 +14,10 @@ export function detectDataType(csvText: string): { type: DataType; rowCount: num
   }
 
   // CBS free agent / available players list
+  // Handles: "Available Batters", "Free Agents Year to Date", "Free Agent Pitchers Year to Date"
   if (csvText.includes('Available Batters') || csvText.includes('Available Pitchers') ||
-      csvText.includes('FA Batters') || csvText.includes('FA Pitchers')) {
+      csvText.includes('FA Batters') || csvText.includes('FA Pitchers') ||
+      csvText.match(/^Free Agent(s| Pitchers| Batters)/m)) {
     return { type: 'freeagents', rowCount: csvText.split('\n').length, confidence: 'high' };
   }
 
@@ -507,34 +509,75 @@ export function parseCategoryStandings(
 }
 
 /**
- * Parses a CBS "Available Players" / free agent export CSV.
- * Handles the same player-row format as parseLeagueRoster but without team section headers.
- * Skips any section header rows (e.g. "Available Batters", "Available Pitchers").
+ * Parses a CBS "Free Agents" / "Available Players" export CSV.
+ *
+ * CBS FA exports two different column layouts:
+ *
+ * Legacy (league-roster style):
+ *   Col 0 = Position (e.g. "OF"), Col 1 = "Name POS | TEAM"
+ *
+ * Standard FA export (what CBS actually produces):
+ *   Row 1  = Title line  e.g. "Free Agents Year to Date MLB Scoring Categories"
+ *   Row 2  = Header      e.g. "Avail,Player,HR,OBP,..."
+ *   Data rows: Col 0 = availability e.g. "W ( 4/2)", Col 1 = "Name POS | TEAM"
  */
 export function parseFreeAgents(csvText: string): LeaguePlayer[] {
   const POSITIONS = new Set(['C','1B','2B','3B','SS','MI','CI','OF','DH','SP','RP','P']);
+  // Matches trailing position(s) before the " | TEAM" separator
   const POS_RE = /\s+((?:C|1B|2B|3B|SS|MI|CI|OF|DH|SP|RP|P)(?:,(?:C|1B|2B|3B|SS|MI|CI|OF|DH|SP|RP|P))*)$/;
 
   const result: LeaguePlayer[] = [];
   const parsed = Papa.parse(csvText, { header: false, skipEmptyLines: false, dynamicTyping: false });
   const rows = parsed.data as string[][];
 
-  for (const row of rows) {
-    const firstVal = (row[0] || '').trim();
-    if (!POSITIONS.has(firstVal)) continue;
+  // Detect which layout we're dealing with by checking the second column of
+  // the first data row.  If col 0 looks like a position code → legacy layout.
+  // If col 0 looks like an availability string ("W", "W ( 4/2)", etc.) → FA layout.
+  let playerCol = 1; // default: CBS FA export (Avail, Player, ...)
+  const firstDataRow = rows.find(r => r.length >= 2 && (r[0] || '').trim());
+  if (firstDataRow && POSITIONS.has((firstDataRow[0] || '').trim())) {
+    playerCol = 1; // legacy: pos is col 0, player is col 1
+  }
 
-    const playerRaw = String(row[1] || '').trim();
-    if (!playerRaw) continue;
+  for (const row of rows) {
+    const col0 = (row[0] || '').trim();
+    const col1 = (row[1] || '').trim();
+
+    // Skip header / title rows
+    if (!col0 || col0.toLowerCase().startsWith('free agent') ||
+        col0.toLowerCase() === 'avail' || col0.toLowerCase() === 'pos' ||
+        col0.toLowerCase() === 'player') continue;
+
+    // Legacy layout: col 0 is a position code
+    if (POSITIONS.has(col0) && playerCol === 1) {
+      const playerRaw = col1;
+      if (!playerRaw) continue;
+      const pipeIdx = playerRaw.indexOf(' | ');
+      const mlbTeam = pipeIdx >= 0 ? playerRaw.slice(pipeIdx + 3).trim() : '';
+      const nameAndPos = pipeIdx >= 0 ? playerRaw.slice(0, pipeIdx) : playerRaw;
+      const posMatch = nameAndPos.match(POS_RE);
+      const name = (posMatch ? nameAndPos.slice(0, posMatch.index) : nameAndPos).trim();
+      const pos = posMatch ? posMatch[1].split(',') : [col0];
+      if (!name || name.length < 2) continue;
+      result.push({ name, pos, mlbTeam, salary: 0, contract: 'N', status: 'active' });
+      continue;
+    }
+
+    // Standard FA export: col 0 is availability ("W ( 4/2)", "FA", etc.), col 1 is player
+    // Skip rows where col 0 doesn't look like availability data
+    if (!col0.match(/^(W|FA|Avail)/i) && !col0.match(/^\d{1,2}\/\d{1,2}/)) continue;
+
+    const playerRaw = col1;
+    if (!playerRaw || playerRaw.toLowerCase() === 'player') continue;
 
     const pipeIdx = playerRaw.indexOf(' | ');
     const mlbTeam = pipeIdx >= 0 ? playerRaw.slice(pipeIdx + 3).trim() : '';
     const nameAndPos = pipeIdx >= 0 ? playerRaw.slice(0, pipeIdx) : playerRaw;
     const posMatch = nameAndPos.match(POS_RE);
     const name = (posMatch ? nameAndPos.slice(0, posMatch.index) : nameAndPos).trim();
-    const pos = posMatch ? posMatch[1].split(',') : [firstVal];
+    const pos = posMatch ? posMatch[1].split(',') : [];
 
-    if (!name || name.length < 2 || name === 'Pos' || name === 'Players') continue;
-
+    if (!name || name.length < 2) continue;
     result.push({ name, pos, mlbTeam, salary: 0, contract: 'N', status: 'active' });
   }
 
