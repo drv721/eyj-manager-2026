@@ -184,9 +184,9 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col md:flex-row">
+    <div className="h-screen flex flex-col md:flex-row overflow-hidden">
       {/* Sidebar */}
-      <nav className="w-full md:w-64 bg-[#141414] text-[#E4E3E0] p-6 flex flex-col gap-8">
+      <nav className="w-full md:w-64 md:h-screen md:overflow-y-auto bg-[#141414] text-[#E4E3E0] p-6 flex flex-col gap-8">
         <div className="flex flex-col gap-1">
           <h1 className="font-serif italic text-2xl tracking-tight">EYJ Manager</h1>
           <p className="text-[10px] uppercase tracking-widest opacity-50">Deez Nutz 2026 • Roto</p>
@@ -2112,26 +2112,19 @@ function DataView({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // Stage files with a forced data type — bypasses auto-detection entirely
-  const stageFilesForced = async (files: FileList | File[], forceType: DataType) => {
-    const newStaged: StagedFile[] = [];
+  // Load files immediately with a forced data type — bypasses auto-detection and staging
+  const loadFilesForced = async (files: FileList | File[], forceType: DataType) => {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (!file.name.match(/\.(csv|txt)$/i)) continue;
       const csvText = await file.text();
-      const { rowCount } = detectDataType(csvText);
-      newStaged.push({
-        id: `${Date.now()}-${i}`,
-        name: file.name,
-        csvText,
-        rawFile: file,
-        detectedType: forceType,
-        assignedType: forceType,
-        rowCount,
-        confidence: 'high' as const,
-      });
+      try {
+        const rawData = await parseCSVText(csvText);
+        onDataLoaded(forceType, rawData, csvText);
+      } catch (err) {
+        console.error('Forced load failed', err);
+      }
     }
-    setStagedFiles(prev => [...prev, ...newStaged]);
     if (forcedFileInputRef.current) forcedFileInputRef.current.value = '';
   };
 
@@ -2142,7 +2135,7 @@ function DataView({
 
   const handleForcedFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length && forcedTypeRef.current) {
-      stageFilesForced(e.target.files, forcedTypeRef.current);
+      loadFilesForced(e.target.files, forcedTypeRef.current);
     }
   };
 
