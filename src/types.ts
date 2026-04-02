@@ -97,6 +97,28 @@ export interface LeaguePlayer {
   status: 'active' | 'reserve' | 'injured' | 'minor';
 }
 
+export interface TradeLogEntry {
+  id: string;
+  date: string;
+  counterTeam: string;
+  giving: string[];    // player names and/or pick labels
+  receiving: string[];
+  status: 'exploring' | 'offered' | 'received' | 'accepted' | 'declined';
+  notes: string;
+  salaryNet: number;   // net salary impact for EYJ (positive = taking on salary)
+}
+
+export interface FaabBidEntry {
+  id: string;
+  date: string;
+  player: string;
+  position: string;
+  bidAmount: number;
+  status: 'exploring' | 'placed' | 'accepted' | 'failed';
+  finalPrice?: number;
+  notes: string;
+}
+
 export interface LeagueDetails {
   battingCategories: string[];
   pitchingCategories: string[];

@@ -2,12 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   LayoutDashboard,
   Users,
-  TrendingUp,
   ArrowLeftRight,
   DollarSign,
-  AlertTriangle,
   ChevronRight,
-  History,
   Target,
   Zap,
   BarChart3,
@@ -36,7 +33,7 @@ import {
   ABBREV_TO_FULLNAME,
   MINOR_LEAGUE_PICKS,
 } from './constants';
-import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry } from './types';
+import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry, TradeLogEntry, FaabBidEntry } from './types';
 
 import {
   mapRosterData,
@@ -56,10 +53,10 @@ import {
 } from './services/dataService';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'manage' | 'trades' | 'analytics' | 'data' | 'strategy'>(() => {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'manage' | 'trades' | 'data' | 'strategy'>(() => {
     try {
       const t = localStorage.getItem('eyj_activeTab');
-      const valid = ['dashboard', 'manage', 'trades', 'analytics', 'data', 'strategy'];
+      const valid = ['dashboard', 'manage', 'trades', 'data', 'strategy'];
       if (t && valid.includes(t)) return t as any;
     } catch {}
     return 'dashboard';
@@ -76,6 +73,8 @@ export default function App() {
   const [freeAgents, setFreeAgents] = useState<LeaguePlayer[]>([]);
   const [dataTimestamps, setDataTimestamps] = useState<Record<string, string>>({});
   const [faabBudget, setFaabBudget] = useState(92);
+  const [tradeLog, setTradeLog] = useState<TradeLogEntry[]>([]);
+  const [faabBidLog, setFaabBidLog] = useState<FaabBidEntry[]>([]);
 
   // Central handler: apply parsed data by type. Used by both auto-load and manual import.
   const applyParsedData = (type: DataType, rawData: any[], csvText: string) => {
@@ -154,6 +153,10 @@ export default function App() {
       if (ts) setDataTimestamps(JSON.parse(ts));
       const budget = localStorage.getItem('eyj_faabBudget');
       if (budget) setFaabBudget(Number(budget));
+      const tl = localStorage.getItem('eyj_tradelog');
+      if (tl) setTradeLog(JSON.parse(tl));
+      const bl = localStorage.getItem('eyj_faabbidlog');
+      if (bl) setFaabBidLog(JSON.parse(bl));
     } catch (err) {
       console.error('Failed to restore from localStorage', err);
     }
@@ -173,9 +176,13 @@ export default function App() {
   useEffect(() => { if (Object.keys(dataTimestamps).length > 0) localStorage.setItem('eyj_timestamps', JSON.stringify(dataTimestamps)); }, [dataTimestamps]);
   useEffect(() => { localStorage.setItem('eyj_faabBudget', String(faabBudget)); }, [faabBudget]);
   useEffect(() => { localStorage.setItem('eyj_activeTab', activeTab); }, [activeTab]);
+  useEffect(() => { localStorage.setItem('eyj_tradelog', JSON.stringify(tradeLog)); }, [tradeLog]);
+  useEffect(() => { localStorage.setItem('eyj_faabbidlog', JSON.stringify(faabBidLog)); }, [faabBidLog]);
 
   const handleResetData = () => {
-    ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings','eyj_leagueroster','eyj_transactions','eyj_freeagents','eyj_timestamps'].forEach(k => localStorage.removeItem(k));
+    ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings','eyj_leagueroster','eyj_transactions','eyj_freeagents','eyj_timestamps','eyj_tradelog','eyj_faabbidlog'].forEach(k => localStorage.removeItem(k));
+    setTradeLog([]);
+    setFaabBidLog([]);
     setParsedRoster(null);
     setParsedStandings(null);
     setParsedFaab(null);
@@ -217,17 +224,11 @@ export default function App() {
             icon={<ArrowLeftRight size={18} />} 
             label="Trades" 
           />
-          <NavItem 
-            active={activeTab === 'strategy'} 
-            onClick={() => setActiveTab('strategy')} 
-            icon={<Zap size={18} />} 
-            label="Strategy Lab" 
-          />
-          <NavItem 
-            active={activeTab === 'analytics'} 
-            onClick={() => setActiveTab('analytics')} 
-            icon={<TrendingUp size={18} />} 
-            label="Analytics" 
+          <NavItem
+            active={activeTab === 'strategy'}
+            onClick={() => setActiveTab('strategy')}
+            icon={<Zap size={18} />}
+            label="Strategy"
           />
           <NavItem
             active={activeTab === 'data'}
@@ -265,6 +266,10 @@ export default function App() {
               standings={(parsedStandings && parsedStandings.length > 0) ? parsedStandings : HISTORICAL_STANDINGS}
               leagueDetails={parsedLeagueDetails}
               transactions={transactions}
+              tradeLog={tradeLog}
+              parsedStatcast={parsedStatcast}
+              parsedStuff={parsedStuff}
+              roster={(parsedRoster && parsedRoster.length > 0) ? parsedRoster : INITIAL_ROSTER}
             />
           )}
           {activeTab === 'manage' && (
@@ -280,6 +285,10 @@ export default function App() {
               leagueRoster={leagueRoster}
               freeAgents={freeAgents}
               dataTimestamps={dataTimestamps}
+              faabBidLog={faabBidLog}
+              onSaveFaabBid={(entry) => setFaabBidLog(prev => [entry, ...prev])}
+              onUpdateFaabBid={(id, patch) => setFaabBidLog(prev => prev.map(e => e.id === id ? { ...e, ...patch } : e))}
+              onDeleteFaabBid={(id) => setFaabBidLog(prev => prev.filter(e => e.id !== id))}
             />
           )}
           {activeTab === 'trades' && (
@@ -288,6 +297,10 @@ export default function App() {
               roster={(parsedRoster && parsedRoster.length > 0) ? parsedRoster : INITIAL_ROSTER}
               categoryStandings={parsedCategoryStandings}
               leagueRoster={leagueRoster}
+              tradeLog={tradeLog}
+              onSaveTrade={(entry) => setTradeLog(prev => [entry, ...prev])}
+              onUpdateTrade={(id, patch) => setTradeLog(prev => prev.map(e => e.id === id ? { ...e, ...patch } : e))}
+              onDeleteTrade={(id) => setTradeLog(prev => prev.filter(e => e.id !== id))}
             />
           )}
           {activeTab === 'strategy' && (
@@ -296,12 +309,9 @@ export default function App() {
               parsedRoster={parsedRoster}
               parsedStatcast={parsedStatcast}
               parsedStuff={parsedStuff}
-            />
-          )}
-          {activeTab === 'analytics' && (
-            <AnalyticsView
-              key="analytics"
+              freeAgents={freeAgents}
               categoryStandings={parsedCategoryStandings}
+              transactions={transactions}
               faabBudget={faabBudget}
             />
           )}
@@ -342,7 +352,16 @@ function NavItem({ active, onClick, icon, label }: { active: boolean, onClick: (
   );
 }
 
-function DashboardView({ standings, leagueDetails, transactions }: { standings: HistoricalStanding[], leagueDetails: LeagueDetails | null, transactions: TransactionEntry[] | null, key?: any }) {
+function DashboardView({ standings, leagueDetails, transactions, tradeLog, parsedStatcast, parsedStuff, roster }: {
+  standings: HistoricalStanding[];
+  leagueDetails: LeagueDetails | null;
+  transactions: TransactionEntry[] | null;
+  tradeLog: TradeLogEntry[];
+  parsedStatcast: any[] | null;
+  parsedStuff: any[] | null;
+  roster: Player[];
+  key?: any;
+}) {
   const hasLeagueCategories = leagueDetails && 
     (leagueDetails.battingCategories.length > 0 || leagueDetails.pitchingCategories.length > 0);
 
@@ -396,112 +415,123 @@ function DashboardView({ standings, leagueDetails, transactions }: { standings: 
           </div>
         </div>
 
-        {/* Key Risks */}
-        <div className="bg-[#141414] text-white p-6 rounded-2xl shadow-lg">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="font-serif italic text-xl">Critical Risks</h3>
-            <AlertTriangle size={18} className="text-[#F27D26]" />
-          </div>
-          {(() => {
-            // Pull recent drops from transaction log (last 14 days)
-            const MY_TEAM_IDS = ['eff you jobu', 'eyj', 'effyoujobu'];
-            const isMyTeam = (t: string) => MY_TEAM_IDS.some(id => t.toLowerCase().includes(id));
-            const cutoff = new Date();
-            cutoff.setDate(cutoff.getDate() - 14);
-
-            const recentDrops = transactions
-              ? transactions.filter(tx => {
-                  const txDate = new Date(tx.date);
-                  return isMyTeam(tx.team) && tx.type === 'drop' && txDate >= cutoff;
-                }).slice(0, 3)
-              : [];
-
-            const recentAdds = transactions
-              ? transactions.filter(tx => {
-                  const txDate = new Date(tx.date);
-                  return isMyTeam(tx.team) && tx.type === 'add' && txDate >= cutoff;
-                }).slice(0, 2)
-              : [];
-
-            if (transactions && (recentDrops.length > 0 || recentAdds.length > 0)) {
-              return (
-                <div className="flex flex-col gap-4">
-                  {recentDrops.map((tx, i) => (
-                    <RiskItem key={`drop-${i}`} title={`Dropped: ${tx.player}`} desc={`${tx.date} — monitor if this affects category balance`} />
-                  ))}
-                  {recentAdds.map((tx, i) => (
-                    <RiskItem key={`add-${i}`} title={`Added: ${tx.player}`} desc={`${tx.date} — watch roster fit and starts`} />
-                  ))}
-                </div>
-              );
-            }
-
-            // Fallback static risks when no transaction data
-            return (
-              <div className="flex flex-col gap-4">
-                <RiskItem title="Iglesias Role" desc="Robert Suarez lurking in ATL. Monitor SV." />
-                <RiskItem title="Senga/Boyd Health" desc="Fragile SP core. Depth needed." />
-                <RiskItem title="Abreu Bridge" desc="Hader returns mid-April. SV will dry up." />
-                <p className="text-[10px] opacity-30 italic mt-1">Load transaction log to auto-populate with real activity</p>
-              </div>
-            );
-          })()}
-        </div>
       </div>
 
+      {/* Player Signals + Pending Trades row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Pending Trades */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
-          <h3 className="font-serif italic text-xl mb-6">Pending Transactions</h3>
-          <div className="flex flex-col gap-4">
-            <div className="p-4 rounded-xl border border-dashed border-black/20 flex justify-between items-center">
-              <div>
-                <p className="text-sm font-bold">WTF Deal (Contingent)</p>
-                <p className="text-xs opacity-60">Out: Adolis Garcia • In: Shane Smith, Lazaro Montes</p>
-              </div>
-              <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-1 rounded uppercase font-bold tracking-tighter">Waiting</span>
-            </div>
-            <div className="p-4 rounded-xl border border-dashed border-black/20 flex justify-between items-center">
-              <div>
-                <p className="text-sm font-bold">Confederation Deal</p>
-                <p className="text-xs opacity-60">Out: Ryan Weathers • In: Tyler Soderstrom</p>
-              </div>
-              <span className="text-[10px] bg-green-100 text-green-700 px-2 py-1 rounded uppercase font-bold tracking-tighter">Ready</span>
-            </div>
-          </div>
-        </div>
+        {/* Player Signals */}
+        {(() => {
+          const lastN = (n: string) => n.toLowerCase().split(' ').slice(-1)[0].replace(/[^a-z]/g, '');
+          const nm = (a: string, b: string) => {
+            const norm = (s: string) => s.toLowerCase().replace(/[^a-z ]/g, '').trim();
+            return norm(a) === norm(b) || lastN(a) === lastN(b);
+          };
+          const activePitchers = roster.filter(p => p.pos.some(x => ['SP','RP','P'].includes(x)) && !p.isMinor);
+          const activeBatters  = roster.filter(p => !p.pos.some(x => ['SP','RP','P'].includes(x)) && !p.isMinor);
 
-        {/* Historical Trend */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="font-serif italic text-xl">Historical Trend</h3>
-            <History size={18} className="opacity-30" />
-          </div>
-          <div className="h-32 flex items-end gap-2">
-            {standings.map((h, i) => (
-              <div key={`${h.year}-${i}`} className="flex-1 flex flex-col items-center gap-2">
-                <div 
-                  className="w-full bg-[#141414] rounded-t-sm transition-all hover:bg-[#F27D26]" 
-                  style={{ height: `${(h.totalPts / 60) * 100}%` }}
-                />
-                <span className="text-[10px] font-mono opacity-50">{h.year}</span>
+          type Signal = { name: string; label: string; stat: string; dir: 'up' | 'down' };
+          const signals: Signal[] = [];
+
+          activePitchers.forEach(p => {
+            const m = parsedStuff?.find(d => nm(d.name, p.name));
+            if (!m) return;
+            const gap = (m.pitchingPlus || 0) - (m.stuffPlus || 0);
+            if (gap < -8) signals.push({ name: p.name, label: 'Hold · Upside', stat: `Stuff+ ${m.stuffPlus}`, dir: 'up' });
+            if (gap > 8)  signals.push({ name: p.name, label: 'Sell high',    stat: `Pitch+ ${m.pitchingPlus}`, dir: 'down' });
+          });
+
+          activeBatters.forEach(p => {
+            const m = parsedStatcast?.find(d => nm(d.name, p.name));
+            if (!m) return;
+            const xw = m.xwoba || 0;
+            if (xw > 0.370) signals.push({ name: p.name, label: 'Elite contact',  stat: `xwOBA ${xw.toFixed(3)}`, dir: 'up' });
+            else if (xw > 0 && xw < 0.290) signals.push({ name: p.name, label: 'Sell high', stat: `xwOBA ${xw.toFixed(3)}`, dir: 'down' });
+          });
+
+          const upSignals   = signals.filter(s => s.dir === 'up').slice(0, 4);
+          const downSignals = signals.filter(s => s.dir === 'down').slice(0, 3);
+
+          return (
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
+              <div className="flex justify-between items-center mb-5">
+                <h3 className="font-serif italic text-xl">Player Signals</h3>
+                <span className="text-[10px] opacity-40 italic">Stuff+ / Statcast derived</span>
               </div>
-            ))}
-          </div>
-        </div>
+              {signals.length === 0 ? (
+                <p className="text-sm opacity-40 italic">Upload Statcast and Stuff+ in the Data tab to see player-level signals here.</p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {upSignals.map(s => (
+                    <div key={s.name} className="flex items-center justify-between py-1.5 border-b border-black/5 last:border-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-green-600 font-bold text-base leading-none">↑</span>
+                        <span className="text-sm font-medium">{s.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] opacity-50">{s.stat}</span>
+                        <span className="text-[10px] bg-green-50 text-green-700 px-2 py-0.5 rounded-full font-bold">{s.label}</span>
+                      </div>
+                    </div>
+                  ))}
+                  {downSignals.map(s => (
+                    <div key={s.name} className="flex items-center justify-between py-1.5 border-b border-black/5 last:border-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-orange-500 font-bold text-base leading-none">↓</span>
+                        <span className="text-sm font-medium">{s.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] opacity-50">{s.stat}</span>
+                        <span className="text-[10px] bg-orange-50 text-orange-700 px-2 py-0.5 rounded-full font-bold">{s.label}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Pending Trades — from trade log */}
+        {(() => {
+          const STATUS_COLORS: Record<string, string> = {
+            offered:  'bg-yellow-100 text-yellow-700',
+            received: 'bg-blue-100 text-blue-700',
+          };
+          const pending = tradeLog.filter(t => t.status === 'offered' || t.status === 'received');
+          return (
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
+              <div className="flex justify-between items-center mb-5">
+                <h3 className="font-serif italic text-xl">Pending Trades</h3>
+                <ArrowLeftRight size={16} className="opacity-30" />
+              </div>
+              {pending.length === 0 ? (
+                <div className="text-sm opacity-40 italic">
+                  <p>No pending trades.</p>
+                  <p className="text-xs mt-1">Save trade scenarios with "Offered" or "Received" status in the Trades tab to see them here.</p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {pending.map(t => (
+                    <div key={t.id} className="p-3 rounded-xl bg-[#F8F8F8] border border-black/5">
+                      <div className="flex justify-between items-start mb-1">
+                        <span className="text-xs font-bold opacity-60">vs {t.counterTeam}</span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${STATUS_COLORS[t.status]}`}>{t.status}</span>
+                      </div>
+                      <p className="text-xs mb-0.5"><span className="opacity-50">Out:</span> {t.giving.join(', ') || '—'}</p>
+                      <p className="text-xs"><span className="opacity-50">In:</span> {t.receiving.join(', ') || '—'}</p>
+                      {t.notes && <p className="text-[10px] opacity-40 mt-1 italic">{t.notes}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
     </motion.div>
   );
 }
 
-function RiskItem({ title, desc }: { title: string, desc: string }) {
-  return (
-    <div className="border-l-2 border-[#F27D26] pl-4 py-1">
-      <p className="text-sm font-bold">{title}</p>
-      <p className="text-xs opacity-60">{desc}</p>
-    </div>
-  );
-}
 
 // ─── Keeper salary escalation (per league rules) ─────────────────────────────
 // $1–9 → +$1, $10–19 → +$2, $20–29 → +$3, $30–39 → +$4, etc.
@@ -543,6 +573,7 @@ function keeperYearsLeft(contract: string): number {
 function ManageView({
   roster, leagueDetails, faabBudget, onBudgetChange,
   parsedFaab, transactions, categoryStandings, leagueRoster, freeAgents, dataTimestamps,
+  faabBidLog, onSaveFaabBid, onUpdateFaabBid, onDeleteFaabBid,
 }: {
   roster: Player[];
   leagueDetails: LeagueDetails | null;
@@ -554,6 +585,10 @@ function ManageView({
   leagueRoster: Record<string, LeaguePlayer[]> | null;
   freeAgents: LeaguePlayer[];
   dataTimestamps: Record<string, string>;
+  faabBidLog: FaabBidEntry[];
+  onSaveFaabBid: (entry: FaabBidEntry) => void;
+  onUpdateFaabBid: (id: string, patch: Partial<FaabBidEntry>) => void;
+  onDeleteFaabBid: (id: string) => void;
   key?: any;
 }) {
   const [section, setSection] = useState<'roster' | 'keepers' | 'adddrop' | 'minors'>('roster');
@@ -765,6 +800,10 @@ function ManageView({
           categoryStandings={categoryStandings}
           transactions={transactions}
           dataTimestamps={dataTimestamps}
+          faabBidLog={faabBidLog}
+          onSaveFaabBid={onSaveFaabBid}
+          onUpdateFaabBid={onUpdateFaabBid}
+          onDeleteFaabBid={onDeleteFaabBid}
         />
       )}
 
@@ -987,19 +1026,33 @@ function suggestBid(
     return { bid: final, reasoning };
   }
 
-  // No history — estimate from position
+  // No history — conservative baseline. Don't inflate unknowns.
+  // Most players with no bid history are fringe/speculative adds; $1-2 is appropriate.
   const isSP = pos.includes('SP');
   const isRP = pos.includes('RP') || pos.includes('P');
-  const base = isSP ? 5 : isRP ? 4 : 3;
-  const bid = Math.min(base + urgencyBoost, faabBudget - 1);
-  const reasoning = urgencyBoost > 0
-    ? `No prior bids found · position baseline + $${urgencyBoost} category urgency`
-    : 'No prior bids found in transaction log · position baseline';
+  const base = isSP ? 2 : isRP ? 1 : 1;
+  // Urgency only adds $1 max when there's no history — not worth overpaying an unknown
+  const urgencyAdd = weakCats.length >= 3 ? 1 : 0;
+  const bid = Math.min(base + urgencyAdd, faabBudget - 1);
+  const reasoning = urgencyAdd > 0
+    ? `No prior bids found · $${base} baseline + $${urgencyAdd} for ${weakCats[0]} need`
+    : 'No prior bids found · conservative baseline for unproven adds';
   return { bid, reasoning };
 }
 
+const BID_STATUS_LABELS: Record<FaabBidEntry['status'], string> = {
+  exploring: 'Exploring', placed: 'Placed', accepted: 'Won', failed: 'Lost',
+};
+const BID_STATUS_COLORS: Record<FaabBidEntry['status'], string> = {
+  exploring: 'bg-gray-100 text-gray-600',
+  placed:    'bg-yellow-100 text-yellow-700',
+  accepted:  'bg-green-100 text-green-700',
+  failed:    'bg-red-100 text-red-600',
+};
+
 function AddDropPanel({
   faabBudget, onBudgetChange, roster, freeAgents, leagueRoster, categoryStandings, transactions, dataTimestamps,
+  faabBidLog, onSaveFaabBid, onUpdateFaabBid, onDeleteFaabBid,
 }: {
   faabBudget: number; onBudgetChange: (n: number) => void;
   roster: Player[]; freeAgents: LeaguePlayer[];
@@ -1007,10 +1060,20 @@ function AddDropPanel({
   categoryStandings: LiveCategoryStanding[] | null;
   transactions: TransactionEntry[] | null;
   dataTimestamps: Record<string, string>;
+  faabBidLog: FaabBidEntry[];
+  onSaveFaabBid: (entry: FaabBidEntry) => void;
+  onUpdateFaabBid: (id: string, patch: Partial<FaabBidEntry>) => void;
+  onDeleteFaabBid: (id: string) => void;
 }) {
-  const [search, setSearch]     = useState('');
-  const [selected, setSelected] = useState<LeaguePlayer | null>(null);
+  const [search, setSearch]         = useState('');
+  const [selected, setSelected]     = useState<LeaguePlayer | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [showLogForm, setShowLogForm]   = useState(false);
+  const [logBidAmt, setLogBidAmt]       = useState('');
+  const [logStatus, setLogStatus]       = useState<FaabBidEntry['status']>('exploring');
+  const [logNotes, setLogNotes]         = useState('');
+  const [editingId, setEditingId]       = useState<string | null>(null);
+  const [editPatch, setEditPatch]       = useState<Partial<FaabBidEntry>>({});
 
   const available = freeAgents.length > 0 ? freeAgents : [];
   const hasFAList = freeAgents.length > 0;
@@ -1024,6 +1087,7 @@ function AddDropPanel({
     setSelected(p);
     setSearch(p.name);
     setShowDropdown(false);
+    setShowLogForm(false);
   };
 
   const weakCats = categoryStandings
@@ -1035,6 +1099,29 @@ function AddDropPanel({
     ? suggestBid(selected.pos, historicalBids, weakCats, faabBudget)
     : { bid: 0, reasoning: '' };
 
+  const openLogForm = () => {
+    setLogBidAmt(String(bid));
+    setLogStatus('exploring');
+    setLogNotes('');
+    setShowLogForm(true);
+  };
+
+  const saveLog = () => {
+    if (!selected) return;
+    onSaveFaabBid({
+      id: `faab-${Date.now()}`,
+      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      player: selected.name,
+      position: inferPositionLabel(selected.pos),
+      bidAmount: Number(logBidAmt) || bid,
+      status: logStatus,
+      notes: logNotes,
+    });
+    setShowLogForm(false);
+    setSelected(null);
+    setSearch('');
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-6">
@@ -1045,7 +1132,7 @@ function AddDropPanel({
           <input
             type="text"
             value={search}
-            onChange={e => { setSearch(e.target.value); setSelected(null); setShowDropdown(true); }}
+            onChange={e => { setSearch(e.target.value); setSelected(null); setShowDropdown(true); setShowLogForm(false); }}
             onFocus={() => setShowDropdown(true)}
             onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
             placeholder={hasFAList ? 'Search available players...' : 'Upload FA list in Data tab first'}
@@ -1084,9 +1171,9 @@ function AddDropPanel({
               )}
             </div>
 
-            {/* League bid history for this player */}
+            {/* League bid history */}
             {historicalBids.length > 0 ? (
-              <div className="bg-[#F8F8F8] rounded-xl p-4">
+              <div className="bg-[#F8F8F8] rounded-xl p-4 mb-4">
                 <p className="text-[10px] uppercase font-bold tracking-widest opacity-50 mb-2">League Bid History</p>
                 <div className="flex flex-col gap-1.5">
                   {historicalBids.map((b, i) => (
@@ -1101,9 +1188,52 @@ function AddDropPanel({
                 </div>
               </div>
             ) : (
-              <p className="text-xs opacity-40 italic">
+              <p className="text-xs opacity-40 italic mb-4">
                 {hasTxns ? `No prior bids found for ${selected.name} in transaction history.` : 'Load transaction log in Data tab for bid history.'}
               </p>
+            )}
+
+            {/* Log bid */}
+            {!showLogForm ? (
+              <button onClick={openLogForm} className="text-sm font-bold text-[#F27D26] hover:text-[#d96a1d] transition-colors">
+                + Log this bid
+              </button>
+            ) : (
+              <div className="border border-black/10 rounded-xl p-4 flex flex-col gap-3">
+                <p className="text-[10px] uppercase font-bold tracking-widest opacity-50">Log Bid for {selected.name}</p>
+                <div className="flex gap-3 items-center">
+                  <label className="text-xs opacity-60 w-16 shrink-0">Amount</label>
+                  <input
+                    type="number"
+                    value={logBidAmt}
+                    onChange={e => setLogBidAmt(e.target.value)}
+                    className="w-20 border border-black/10 rounded px-2 py-1 text-sm font-mono focus:outline-none focus:border-[#F27D26]"
+                  />
+                </div>
+                <div className="flex gap-3 items-center">
+                  <label className="text-xs opacity-60 w-16 shrink-0">Status</label>
+                  <select value={logStatus} onChange={e => setLogStatus(e.target.value as FaabBidEntry['status'])} className="border border-black/10 rounded px-2 py-1 text-sm focus:outline-none focus:border-[#F27D26] bg-white">
+                    <option value="exploring">Exploring</option>
+                    <option value="placed">Placed</option>
+                    <option value="accepted">Won</option>
+                    <option value="failed">Lost</option>
+                  </select>
+                </div>
+                <div className="flex gap-3 items-center">
+                  <label className="text-xs opacity-60 w-16 shrink-0">Notes</label>
+                  <input
+                    type="text"
+                    value={logNotes}
+                    onChange={e => setLogNotes(e.target.value)}
+                    placeholder="optional"
+                    className="flex-1 border border-black/10 rounded px-2 py-1 text-sm focus:outline-none focus:border-[#F27D26]"
+                  />
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <button onClick={() => setShowLogForm(false)} className="text-xs opacity-50 hover:opacity-80 px-3 py-1.5">Cancel</button>
+                  <button onClick={saveLog} className="text-xs font-bold bg-[#F27D26] text-white rounded-lg px-4 py-1.5 hover:bg-[#d96a1d] transition-colors">Save</button>
+                </div>
+              </div>
             )}
           </>
         ) : (
@@ -1118,6 +1248,60 @@ function AddDropPanel({
           <EditableSidebarValue value={faabBudget} onChange={onBudgetChange} prefix="$" />
         </div>
       </div>
+
+      {/* Bid Log */}
+      {faabBidLog.length > 0 && (
+        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-6">
+          <h3 className="font-serif italic text-xl mb-4">Bid History</h3>
+          <div className="flex flex-col gap-2">
+            {faabBidLog.map(entry => (
+              <div key={entry.id}>
+                {editingId === entry.id ? (
+                  <div className="border border-[#F27D26]/30 rounded-xl p-4 flex flex-col gap-2">
+                    <div className="flex gap-2 items-center flex-wrap">
+                      <span className="text-sm font-bold flex-1">{entry.player}</span>
+                      <select value={editPatch.status ?? entry.status} onChange={e => setEditPatch(p => ({ ...p, status: e.target.value as FaabBidEntry['status'] }))} className="border border-black/10 rounded px-2 py-0.5 text-xs bg-white focus:outline-none">
+                        <option value="exploring">Exploring</option>
+                        <option value="placed">Placed</option>
+                        <option value="accepted">Won</option>
+                        <option value="failed">Lost</option>
+                      </select>
+                      {(editPatch.status ?? entry.status) === 'failed' && (
+                        <input type="number" placeholder="Winner paid $" value={editPatch.finalPrice ?? entry.finalPrice ?? ''} onChange={e => setEditPatch(p => ({ ...p, finalPrice: Number(e.target.value) }))} className="w-28 border border-black/10 rounded px-2 py-0.5 text-xs font-mono focus:outline-none" />
+                      )}
+                    </div>
+                    <input type="text" value={editPatch.notes ?? entry.notes} onChange={e => setEditPatch(p => ({ ...p, notes: e.target.value }))} placeholder="Notes" className="border border-black/10 rounded px-2 py-1 text-xs focus:outline-none" />
+                    <div className="flex gap-2 justify-end">
+                      <button onClick={() => { setEditingId(null); setEditPatch({}); }} className="text-xs opacity-50 hover:opacity-80 px-2 py-1">Cancel</button>
+                      <button onClick={() => { onUpdateFaabBid(entry.id, editPatch); setEditingId(null); setEditPatch({}); }} className="text-xs font-bold bg-[#F27D26] text-white rounded px-3 py-1">Save</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-3 py-2 border-b border-black/5 last:border-0 group">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium">{entry.player}</span>
+                        <span className="text-[10px] opacity-40">{entry.position}</span>
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${BID_STATUS_COLORS[entry.status]}`}>{BID_STATUS_LABELS[entry.status]}</span>
+                      </div>
+                      <div className="flex items-center gap-3 mt-0.5">
+                        <span className="text-xs opacity-50">{entry.date}</span>
+                        <span className="font-mono text-xs font-bold">${entry.bidAmount}</span>
+                        {entry.status === 'failed' && entry.finalPrice && <span className="text-xs opacity-50">• winner: ${entry.finalPrice}</span>}
+                        {entry.notes && <span className="text-xs opacity-40 italic">{entry.notes}</span>}
+                      </div>
+                    </div>
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                      <button onClick={() => { setEditingId(entry.id); setEditPatch({}); }} className="text-[10px] opacity-50 hover:opacity-100 px-2 py-1 rounded hover:bg-[#F8F8F8]">Edit</button>
+                      <button onClick={() => onDeleteFaabBid(entry.id)} className="text-[10px] text-red-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50">×</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1328,19 +1512,38 @@ function availablePicks(abbrev: string, selected: PickSlot[]): PickSlot[] {
   return pool;
 }
 
+const TRADE_STATUS_LABELS: Record<TradeLogEntry['status'], string> = {
+  exploring: 'Exploring', offered: 'Offered', received: 'Received', accepted: 'Accepted', declined: 'Declined',
+};
+const TRADE_STATUS_COLORS: Record<TradeLogEntry['status'], string> = {
+  exploring: 'bg-gray-100 text-gray-600',
+  offered:   'bg-yellow-100 text-yellow-700',
+  received:  'bg-blue-100 text-blue-700',
+  accepted:  'bg-green-100 text-green-700',
+  declined:  'bg-red-100 text-red-600',
+};
+
 function TradesView({
-  roster,
-  categoryStandings,
-  leagueRoster,
+  roster, categoryStandings, leagueRoster,
+  tradeLog, onSaveTrade, onUpdateTrade, onDeleteTrade,
 }: {
   roster: Player[];
   categoryStandings: LiveCategoryStanding[] | null;
   leagueRoster: Record<string, LeaguePlayer[]> | null;
+  tradeLog: TradeLogEntry[];
+  onSaveTrade: (entry: TradeLogEntry) => void;
+  onUpdateTrade: (id: string, patch: Partial<TradeLogEntry>) => void;
+  onDeleteTrade: (id: string) => void;
   key?: any;
 }) {
   const ALL_TEAMS = Object.keys(ABBREV_TO_FULLNAME).sort();
   const [team1, setTeam1] = useState('EYJ');
   const [team2, setTeam2] = useState('');
+  const [showSaveForm, setShowSaveForm]   = useState(false);
+  const [saveStatus, setSaveStatus]       = useState<TradeLogEntry['status']>('exploring');
+  const [saveNotes, setSaveNotes]         = useState('');
+  const [editingTradeId, setEditingTradeId] = useState<string | null>(null);
+  const [editTradePatch, setEditTradePatch] = useState<Partial<TradeLogEntry>>({});
   const [t1Players, setT1Players] = useState<Set<string>>(new Set());
   const [t2Players, setT2Players] = useState<Set<string>>(new Set());
   const [t1Picks,   setT1Picks]   = useState<PickSlot[]>([]);
@@ -1666,6 +1869,105 @@ function TradesView({
           </div>
         </div>
       )}
+
+      {/* Save to log — shown when both sides have selections */}
+      {hasAnything && (
+        <div>
+          {!showSaveForm ? (
+            <button onClick={() => { setSaveStatus('exploring'); setSaveNotes(''); setShowSaveForm(true); }} className="text-sm font-bold text-[#F27D26] hover:text-[#d96a1d] transition-colors">
+              + Save to trade log
+            </button>
+          ) : (
+            <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-5 flex flex-col gap-3">
+              <p className="text-[10px] uppercase font-bold tracking-widest opacity-50">Log This Scenario</p>
+              <div className="flex gap-3 items-center flex-wrap">
+                <label className="text-xs opacity-60 w-12 shrink-0">Status</label>
+                <select value={saveStatus} onChange={e => setSaveStatus(e.target.value as TradeLogEntry['status'])} className="border border-black/10 rounded px-2 py-1 text-sm bg-white focus:outline-none focus:border-[#F27D26]">
+                  <option value="exploring">Exploring</option>
+                  <option value="offered">Offered</option>
+                  <option value="received">Received</option>
+                  <option value="accepted">Accepted</option>
+                  <option value="declined">Declined</option>
+                </select>
+              </div>
+              <div className="flex gap-3 items-center">
+                <label className="text-xs opacity-60 w-12 shrink-0">Notes</label>
+                <input type="text" value={saveNotes} onChange={e => setSaveNotes(e.target.value)} placeholder="optional context..." className="flex-1 border border-black/10 rounded px-2 py-1 text-sm focus:outline-none focus:border-[#F27D26]" />
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => setShowSaveForm(false)} className="text-xs opacity-50 hover:opacity-80 px-3 py-1.5">Cancel</button>
+                <button onClick={() => {
+                  const givingNames = t1SelPlayers.map(p => p.name).concat(t1Picks.map(p => pickLabel(p)));
+                  const receivingNames = t2SelPlayers.map(p => p.name).concat(t2Picks.map(p => pickLabel(p)));
+                  onSaveTrade({
+                    id: `trade-${Date.now()}`,
+                    date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+                    counterTeam: team2 || '?',
+                    giving: givingNames,
+                    receiving: receivingNames,
+                    status: saveStatus,
+                    notes: saveNotes,
+                    salaryNet: salaryNet,
+                  });
+                  setShowSaveForm(false);
+                }} className="text-xs font-bold bg-[#F27D26] text-white rounded-lg px-4 py-1.5 hover:bg-[#d96a1d] transition-colors">Save</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Trade Log */}
+      {tradeLog.length > 0 && (
+        <div className="flex flex-col gap-4">
+          <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold">Trade Log</p>
+          <div className="bg-white rounded-2xl border border-black/5 shadow-sm divide-y divide-black/5">
+            {tradeLog.map(entry => (
+              <div key={entry.id} className="p-4">
+                {editingTradeId === entry.id ? (
+                  <div className="flex flex-col gap-2">
+                    <div className="flex gap-2 items-center flex-wrap">
+                      <span className="text-sm font-bold flex-1">vs {entry.counterTeam}</span>
+                      <select value={editTradePatch.status ?? entry.status} onChange={e => setEditTradePatch(p => ({ ...p, status: e.target.value as TradeLogEntry['status'] }))} className="border border-black/10 rounded px-2 py-0.5 text-xs bg-white focus:outline-none">
+                        <option value="exploring">Exploring</option>
+                        <option value="offered">Offered</option>
+                        <option value="received">Received</option>
+                        <option value="accepted">Accepted</option>
+                        <option value="declined">Declined</option>
+                      </select>
+                    </div>
+                    <input type="text" value={editTradePatch.notes ?? entry.notes} onChange={e => setEditTradePatch(p => ({ ...p, notes: e.target.value }))} placeholder="Notes" className="border border-black/10 rounded px-2 py-1 text-xs focus:outline-none" />
+                    <div className="flex gap-2 justify-end">
+                      <button onClick={() => { setEditingTradeId(null); setEditTradePatch({}); }} className="text-xs opacity-50 hover:opacity-80 px-2 py-1">Cancel</button>
+                      <button onClick={() => { onUpdateTrade(entry.id, editTradePatch); setEditingTradeId(null); setEditTradePatch({}); }} className="text-xs font-bold bg-[#F27D26] text-white rounded px-3 py-1">Save</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-3 group">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap mb-1">
+                        <span className="text-xs opacity-40">{entry.date}</span>
+                        <span className="text-sm font-bold">vs {entry.counterTeam}</span>
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${TRADE_STATUS_COLORS[entry.status]}`}>{TRADE_STATUS_LABELS[entry.status]}</span>
+                        {entry.salaryNet !== 0 && (
+                          <span className={`text-[10px] font-mono font-bold ${entry.salaryNet > 0 ? 'text-orange-500' : 'text-green-600'}`}>{entry.salaryNet > 0 ? '+' : ''}${entry.salaryNet} salary</span>
+                        )}
+                      </div>
+                      <p className="text-xs"><span className="opacity-40">Out:</span> {entry.giving.join(', ') || '—'}</p>
+                      <p className="text-xs"><span className="opacity-40">In:</span> {entry.receiving.join(', ') || '—'}</p>
+                      {entry.notes && <p className="text-[10px] opacity-40 italic mt-0.5">{entry.notes}</p>}
+                    </div>
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                      <button onClick={() => { setEditingTradeId(entry.id); setEditTradePatch({}); }} className="text-[10px] opacity-50 hover:opacity-100 px-2 py-1 rounded hover:bg-[#F8F8F8]">Edit</button>
+                      <button onClick={() => onDeleteTrade(entry.id)} className="text-[10px] text-red-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50">×</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -1695,19 +1997,17 @@ const TYPE_LABELS: Record<DataType, string> = {
 };
 
 function StrategyLabView({
-  parsedRoster,
-  parsedStatcast,
-  parsedStuff,
+  parsedRoster, parsedStatcast, parsedStuff, freeAgents, categoryStandings, transactions, faabBudget,
 }: {
   parsedRoster: Player[] | null;
   parsedStatcast: any[] | null;
   parsedStuff: any[] | null;
+  freeAgents: LeaguePlayer[];
+  categoryStandings: LiveCategoryStanding[] | null;
+  transactions: TransactionEntry[] | null;
+  faabBudget: number;
   key?: any;
 }) {
-  const topEV = parsedStatcast ? [...parsedStatcast].sort((a, b) => (b.ev || 0) - (a.ev || 0)).slice(0, 3) : [];
-  const topBarrel = parsedStatcast ? [...parsedStatcast].sort((a, b) => (b.barrelRate || 0) - (a.barrelRate || 0)).slice(0, 3) : [];
-  const topStuff = parsedStuff ? [...parsedStuff].sort((a, b) => (b.stuffPlus || 0) - (a.stuffPlus || 0)).slice(0, 3) : [];
-
   const effectiveRoster = parsedRoster && parsedRoster.length > 0 ? parsedRoster : INITIAL_ROSTER;
   const lastN = (name: string) => name.toLowerCase().split(' ').slice(-1)[0].replace(/[^a-z]/g, '');
   const nameMatch = (a: string, b: string) => {
@@ -1715,122 +2015,242 @@ function StrategyLabView({
     return norm(a) === norm(b) || lastN(a) === lastN(b);
   };
 
+  // ── Breakout Radar: FA players with strong underlying metrics ──
+  const rosterNames = new Set(effectiveRoster.map(p => p.name.toLowerCase().replace(/[^a-z]/g, '')));
+  const isOnRoster = (name: string) => rosterNames.has(name.toLowerCase().replace(/[^a-z]/g, ''));
+
+  const radarBatters = (parsedStatcast || [])
+    .filter(d => (d.xwoba || 0) > 0.350 && !isOnRoster(d.name))
+    .map(d => {
+      const fa = freeAgents.find(p => nameMatch(p.name, d.name));
+      if (!fa) return null;
+      return { name: d.name, pos: fa.pos.join('/'), stat: `xwOBA ${d.xwoba?.toFixed(3)}`, ev: d.ev, score: d.xwoba || 0 };
+    }).filter(Boolean).sort((a: any, b: any) => b.score - a.score).slice(0, 5) as any[];
+
+  const radarPitchers = (parsedStuff || [])
+    .filter((d: any) => (d.stuffPlus || 0) > 108 && !isOnRoster(d.name))
+    .map((d: any) => {
+      const fa = freeAgents.find(p => nameMatch(p.name, d.name));
+      if (!fa) return null;
+      return { name: d.name, pos: fa.pos.join('/'), stat: `Stuff+ ${d.stuffPlus}`, score: d.stuffPlus || 0 };
+    }).filter(Boolean).sort((a: any, b: any) => b.score - a.score).slice(0, 5) as any[];
+
+  const weakCatNames = categoryStandings?.filter(c => c.myRank > 8).map(c => c.category) ?? [];
+
+  // ── Rotation Health: your SPs/RPs by Stuff+ ──
+  const rotationHealth = effectiveRoster
+    .filter(p => p.pos.some(x => ['SP','RP','P'].includes(x)) && !p.isMinor)
+    .map(p => {
+      const m = parsedStuff?.find(d => nameMatch(d.name, p.name));
+      return { player: p, stuffPlus: m?.stuffPlus || null, pitchingPlus: m?.pitchingPlus || null };
+    }).sort((a, b) => (b.stuffPlus || 0) - (a.stuffPlus || 0));
+
+  // ── SGP gap analysis (from old Analytics) ──
+  const [manualRanks, setManualRanks] = useState<Record<string, number>>(
+    Object.fromEntries(CATEGORY_PROJECTIONS.map(p => [p.cat, 6]))
+  );
+  const TOTAL_TEAMS = 12;
+  const sgpRows = CATEGORY_PROJECTIONS.map(proj => {
+    const live  = categoryStandings?.find(c => c.category === proj.cat);
+    const denom = SGP_DENOMINATORS.find(s => s.cat === proj.cat);
+    const rank       = live ? live.myRank     : (manualRanks[proj.cat] ?? 6);
+    const pts        = live ? live.myPts      : (TOTAL_TEAMS - rank + 1);
+    const ptsToNext  = live ? live.ptsGapToNext  : (rank > 1 ? 1 : 0);
+    return { cat: proj.cat, rank, pts, ptsToNext, denomCost: denom?.denom ?? null, isLive: !!live };
+  });
+  const sgpBatting  = sgpRows.filter(r => ['HR','OBP','R','RBI','SB'].includes(r.cat));
+  const sgpPitching = sgpRows.filter(r => ['ERA','INN','K','S','WHIP'].includes(r.cat));
+
+  const RankBar = ({ rank, total }: { rank: number; total: number }) => {
+    const pct = rank > 0 ? ((total - rank + 1) / total) * 100 : 50;
+    const color = pct >= 75 ? 'bg-green-500' : pct >= 42 ? 'bg-yellow-400' : 'bg-red-400';
+    return (
+      <div className="flex items-center gap-2 w-full">
+        <div className="flex-1 h-1.5 bg-black/10 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+        </div>
+        <span className="text-[10px] font-mono w-8 text-right opacity-60">#{rank}</span>
+      </div>
+    );
+  };
+
+  const GapTable = ({ label, data }: { label: string; data: typeof sgpRows }) => (
+    <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
+      <div className="px-6 py-4 border-b border-black/5 flex justify-between items-center">
+        <h3 className="font-serif italic text-xl">{label}</h3>
+        {categoryStandings
+          ? <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">Live</span>
+          : <span className="text-[10px] opacity-40 italic">Estimated — upload standings CSV for live data</span>}
+      </div>
+      <div className="grid grid-cols-[1fr_1.2fr_1fr_0.8fr_1.2fr] gap-2 px-6 py-2 bg-[#F8F8F8] border-b border-black/10">
+        {['Category','Rank','Pts','Gap Up','1 pt costs'].map(h => <span key={h} className="col-header">{h}</span>)}
+      </div>
+      {data.map(r => (
+        <div key={r.cat} className="grid grid-cols-[1fr_1.2fr_1fr_0.8fr_1.2fr] gap-2 px-6 py-3 border-b border-black/5 items-center hover:bg-[#F8F8F8] transition-colors">
+          <span className="text-sm font-bold">{r.cat}</span>
+          <div className="flex flex-col gap-1">
+            <RankBar rank={r.rank} total={TOTAL_TEAMS} />
+            {!categoryStandings && (
+              <input type="number" min={1} max={TOTAL_TEAMS} value={manualRanks[r.cat] ?? 6}
+                onChange={e => setManualRanks(prev => ({ ...prev, [r.cat]: Number(e.target.value) }))}
+                className="w-10 text-[10px] font-mono border-b border-black/20 bg-transparent outline-none" />
+            )}
+          </div>
+          <span className="font-mono text-sm">{r.pts.toFixed(1)}</span>
+          <span className={`font-mono text-sm font-bold ${r.ptsToNext > 0 ? 'text-red-500' : 'text-green-600'}`}>
+            {r.ptsToNext > 0 ? `−${r.ptsToNext.toFixed(1)}` : '#1'}
+          </span>
+          <span className="text-xs opacity-60 font-mono">{r.denomCost != null ? `${r.denomCost} ${r.cat}` : '—'}</span>
+        </div>
+      ))}
+    </div>
+  );
+
+  const minorLeaguers = effectiveRoster.filter(p => p.isMinor);
+
   return (
-    <motion.div
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      className="flex flex-col gap-8"
-    >
+    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="flex flex-col gap-8">
       <header>
-        <h2 className="text-4xl font-serif italic mb-2">Strategy Lab</h2>
-        <p className="text-sm opacity-60">Cap efficiency · sabermetric signals · regression watch</p>
+        <h2 className="text-4xl font-serif italic mb-2">Strategy</h2>
+        <p className="text-sm opacity-60">Breakout radar · category gaps · rotation health · call-up watch</p>
       </header>
 
-      <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold -mb-4">Cap &amp; Market Efficiency</p>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* SGP Heatmap */}
-        <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-black/5">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="font-serif italic text-xl">SGP Heatmap (Efficiency)</h3>
-            <BarChart3 size={18} className="opacity-30" />
+      {/* ── Breakout Radar ── */}
+      <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold -mb-4">Breakout Radar</p>
+      <div className="bg-[#141414] text-white p-6 rounded-2xl shadow-lg">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="font-serif italic text-xl">Hidden Gems Available</h3>
+          <div className="flex items-center gap-2">
+            <Star size={16} className="text-[#F27D26]" />
+            {weakCatNames.length > 0 && (
+              <span className="text-[10px] text-yellow-400 font-bold">Targeting: {weakCatNames.slice(0,3).join(', ')}</span>
+            )}
           </div>
-          <div className="flex flex-col gap-4">
-            {SGP_HEATMAP.map((item, i) => (
-              <div key={`${item.category}-${i}`} className="flex items-center gap-4">
-                <div className="w-12 text-xs font-bold opacity-60">{item.category}</div>
-                <div className="flex-1 h-8 bg-[#F8F8F8] rounded-full overflow-hidden relative">
-                  <div
-                    className={`h-full transition-all ${item.difficulty === 'Easy' ? 'bg-green-500' : item.difficulty === 'Medium' ? 'bg-yellow-500' : 'bg-red-500'}`}
-                    style={{ width: `${(item.pointsToGain / 5) * 100}%` }}
-                  />
-                  <span className="absolute inset-y-0 left-4 flex items-center text-[10px] font-mono font-bold">
-                    +{item.pointsToGain} Pts
-                  </span>
-                </div>
-                <div className="w-20 text-[10px] font-bold uppercase tracking-tighter text-right opacity-50">{item.difficulty}</div>
-              </div>
-            ))}
-          </div>
-          <p className="mt-6 text-xs opacity-50 italic">*HR is the most efficient category to target. Standings are tightly clustered in the 140-160 range.</p>
         </div>
 
-        {/* Process Leaders */}
-        <div className="bg-[#141414] text-white p-6 rounded-2xl shadow-lg">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="font-serif italic text-xl">Sabermetric Leaders</h3>
-            <Zap size={18} className="text-[#F27D26]" />
+        {(radarBatters.length === 0 && radarPitchers.length === 0) && (
+          <p className="text-sm opacity-40 italic">
+            {(parsedStatcast || parsedStuff)
+              ? freeAgents.length === 0
+                ? 'Upload your FA list in the Data tab to scan for available gems.'
+                : 'No strong-metric players found in your FA list. Try lowering thresholds or refreshing data.'
+              : 'Upload Statcast (Savant) and Stuff+ (FanGraphs) in the Data tab to scan the waiver wire.'}
+          </p>
+        )}
+
+        {radarBatters.length > 0 && (
+          <div className="mb-6">
+            <p className="text-[10px] uppercase opacity-50 mb-3 tracking-widest">Batters — xwOBA &gt; .350</p>
+            <div className="flex flex-col gap-2">
+              {radarBatters.map((p: any, i: number) => (
+                <div key={i} className="flex items-center justify-between py-2 border-b border-white/10 last:border-0">
+                  <div>
+                    <span className="text-sm font-bold">{p.name}</span>
+                    <span className="text-[10px] opacity-40 ml-2">{p.pos}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {p.ev && <span className="text-[10px] opacity-50">{p.ev} EV</span>}
+                    <span className="font-mono text-[#F27D26] font-bold text-sm">{p.stat}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="flex flex-col gap-6">
-            {parsedStatcast && parsedStatcast.length > 0 ? (
-              <>
-                <div>
-                  <p className="text-[10px] uppercase opacity-50 mb-2">Top Exit Velocity (EV)</p>
-                  <div className="flex flex-col gap-2">
-                    {topEV.map((p, i) => (
-                      <div key={`ev-${i}`} className="flex justify-between items-center">
-                        <span className="text-sm font-bold">{p.player || p.name}</span>
-                        <span className="font-mono text-[#F27D26]">{p.ev} mph</span>
-                      </div>
-                    ))}
+        )}
+
+        {radarPitchers.length > 0 && (
+          <div>
+            <p className="text-[10px] uppercase opacity-50 mb-3 tracking-widest">Pitchers — Stuff+ &gt; 108</p>
+            <div className="flex flex-col gap-2">
+              {radarPitchers.map((p: any, i: number) => (
+                <div key={i} className="flex items-center justify-between py-2 border-b border-white/10 last:border-0">
+                  <div>
+                    <span className="text-sm font-bold">{p.name}</span>
+                    <span className="text-[10px] opacity-40 ml-2">{p.pos}</span>
                   </div>
+                  <span className="font-mono text-[#F27D26] font-bold text-sm">{p.stat}</span>
                 </div>
-                <div>
-                  <p className="text-[10px] uppercase opacity-50 mb-2">Barrel Rate Leaders</p>
-                  <div className="flex flex-col gap-2">
-                    {topBarrel.map((p, i) => (
-                      <div key={`barrel-${i}`} className="flex justify-between items-center">
-                        <span className="text-sm font-bold">{p.player || p.name}</span>
-                        <span className="font-mono text-[#F27D26]">{p.barrelRate}%</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <div>
-                  <p className="text-[10px] uppercase opacity-50 mb-2">Barrel Rate (90th Pct)</p>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-bold">Kazuma Okamoto</span>
-                    <span className="font-mono text-[#F27D26]">12.5%</span>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase opacity-50 mb-2">Plate Discipline</p>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-bold">Xavier Edwards</span>
-                    <span className="font-mono text-[#F27D26]">85</span>
-                  </div>
-                </div>
-              </>
-            )}
-            {parsedStuff && parsedStuff.length > 0 ? (
-              <div>
-                <p className="text-[10px] uppercase opacity-50 mb-2">Stuff+ Leaders</p>
-                <div className="flex flex-col gap-2">
-                  {topStuff.map((p, i) => (
-                    <div key={`stuff-${i}`} className="flex justify-between items-center">
-                      <span className="text-sm font-bold">{p.player || p.name}</span>
-                      <span className="font-mono text-[#F27D26]">{p.stuffPlus}</span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Category Gap Analysis ── */}
+      <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold -mb-4">Category Standing Gaps</p>
+      <GapTable label="Batting" data={sgpBatting} />
+      <GapTable label="Pitching" data={sgpPitching} />
+
+      {/* ── Rotation Health + Call-Up Watch ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Rotation Health */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="font-serif italic text-xl">Rotation Health</h3>
+            <span className="text-[10px] opacity-40 italic">Stuff+ ranked</span>
+          </div>
+          {rotationHealth.length === 0 ? (
+            <p className="text-sm opacity-40 italic">No pitchers on roster.</p>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {rotationHealth.map(({ player, stuffPlus, pitchingPlus }) => {
+                const confidence = stuffPlus && stuffPlus > 110 ? 'Start' : stuffPlus && stuffPlus > 95 ? 'Monitor' : stuffPlus ? 'Spot' : null;
+                const confCls    = confidence === 'Start' ? 'text-green-700 bg-green-50' : confidence === 'Monitor' ? 'text-yellow-700 bg-yellow-50' : 'text-gray-500 bg-gray-50';
+                return (
+                  <div key={player.id} className="flex items-center justify-between py-2 border-b border-black/5 last:border-0">
+                    <div>
+                      <p className="text-sm font-medium">{player.name}</p>
+                      <p className="text-[10px] opacity-40">{player.pos.join('/')} · {player.team}</p>
                     </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div>
-                <p className="text-[10px] uppercase opacity-50 mb-2">Stuff+ (Pitching+)</p>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-bold">Garrett Crochet</span>
-                  <span className="font-mono text-[#F27D26]">125</span>
-                </div>
-              </div>
-            )}
+                    <div className="flex items-center gap-2">
+                      {stuffPlus && <span className="font-mono text-xs opacity-60">Stf+ {stuffPlus}</span>}
+                      {pitchingPlus && <span className="font-mono text-xs opacity-40">Pit+ {pitchingPlus}</span>}
+                      {confidence
+                        ? <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${confCls}`}>{confidence}</span>
+                        : <span className="text-[10px] opacity-30 italic">No data</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {!parsedStuff && <p className="text-xs opacity-30 italic mt-3">Upload Stuff+ (FanGraphs) for signal-based rankings</p>}
+        </div>
+
+        {/* Call-Up Watch */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="font-serif italic text-xl">Call-Up Watch</h3>
+            <span className="text-[10px] opacity-40 italic">M-status players</span>
           </div>
+          {minorLeaguers.length === 0 ? (
+            <p className="text-sm opacity-40 italic">No M-status players on roster.</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {minorLeaguers.map(p => {
+                const st = parsedStuff?.find(d => nameMatch(d.name, p.name));
+                const sc = parsedStatcast?.find(d => nameMatch(d.name, p.name));
+                const signal = st?.stuffPlus && st.stuffPlus > 105 ? `Stuff+ ${st.stuffPlus} — ready` :
+                               sc?.xwoba && sc.xwoba > 0.350 ? `xwOBA ${sc.xwoba.toFixed(3)} — promising` : null;
+                return (
+                  <div key={p.id} className="p-3 rounded-xl bg-[#F8F8F8] border border-black/5">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="text-sm font-medium">{p.name}</p>
+                        <p className="text-[10px] opacity-40">{p.pos.join('/')} · {p.team} · {p.contract}</p>
+                      </div>
+                      <span className="font-mono text-xs opacity-50">${p.salary}</span>
+                    </div>
+                    {signal && <p className="text-[10px] text-green-700 font-bold mt-1">↑ {signal}</p>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Regression Watch — always visible */}
+      {/* Regression Watch */}
       <>
         <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold -mb-4">Regression Watch</p>
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
@@ -1976,165 +2396,6 @@ function EditableValue({ value, onChange }: { value: number; onChange: (v: numbe
   );
 }
 
-function AnalyticsView({ categoryStandings, faabBudget }: { categoryStandings: LiveCategoryStanding[] | null; faabBudget: number; key?: any }) {
-  // Manual/fallback mode: user can enter their own rank per category
-  const [manualRanks, setManualRanks] = useState<Record<string, number>>(
-    Object.fromEntries(CATEGORY_PROJECTIONS.map(p => [p.cat, 6]))
-  );
-  const TOTAL_TEAMS = 12;
-
-  // Build the display rows — prefer live data, fall back to manual
-  const rows = CATEGORY_PROJECTIONS.map(proj => {
-    const live = categoryStandings?.find(c => c.category === proj.cat);
-    const denom = SGP_DENOMINATORS.find(s => s.cat === proj.cat);
-    const rank = live ? live.myRank : (manualRanks[proj.cat] ?? 6);
-    const pts = live ? live.myPts : (TOTAL_TEAMS - rank + 1);
-    const ptsToNext = live ? live.ptsGapToNext : (rank > 1 ? 1 : 0);
-    const ptsToFirst = live ? live.ptsGapToFirst : (rank - 1);
-
-    return {
-      cat: proj.cat,
-      value: proj.value,
-      rank,
-      pts,
-      ptsToNext,
-      ptsToFirst,
-      denomCost: denom?.denom ?? null,
-      isLive: !!live,
-    };
-  });
-
-  const batting  = rows.filter(r => ['HR','OBP','R','RBI','SB'].includes(r.cat));
-  const pitching = rows.filter(r => ['ERA','INN','K','S','WHIP'].includes(r.cat));
-
-  const RankBar = ({ rank, total }: { rank: number; total: number }) => {
-    const pct = rank > 0 ? ((total - rank + 1) / total) * 100 : 50;
-    const color = pct >= 75 ? 'bg-green-500' : pct >= 42 ? 'bg-yellow-400' : 'bg-red-400';
-    return (
-      <div className="flex items-center gap-2 w-full">
-        <div className="flex-1 h-1.5 bg-black/10 rounded-full overflow-hidden">
-          <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
-        </div>
-        <span className="text-[10px] font-mono w-8 text-right opacity-60">#{rank}</span>
-      </div>
-    );
-  };
-
-  const GapTable = ({ label, data }: { label: string; data: typeof rows }) => (
-    <div className="bg-white rounded-2xl shadow-sm border border-black/5 overflow-hidden">
-      <div className="px-6 py-4 border-b border-black/5 flex justify-between items-center">
-        <h3 className="font-serif italic text-xl">{label}</h3>
-        {!categoryStandings && (
-          <span className="text-[10px] opacity-40 italic">Estimated — upload standings CSV for live data</span>
-        )}
-        {categoryStandings && (
-          <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">Live</span>
-        )}
-      </div>
-      <div className="grid grid-cols-[1fr_1.2fr_1fr_0.8fr_1.2fr] gap-2 px-6 py-2 bg-[#F8F8F8] border-b border-black/10">
-        <span className="col-header">Category</span>
-        <span className="col-header">Rank</span>
-        <span className="col-header">Pts</span>
-        <span className="col-header">Gap Up</span>
-        <span className="col-header">1 pt costs</span>
-      </div>
-      {data.map(r => (
-        <div
-          key={r.cat}
-          className="grid grid-cols-[1fr_1.2fr_1fr_0.8fr_1.2fr] gap-2 px-6 py-3 border-b border-black/5 items-center hover:bg-[#F8F8F8] transition-colors"
-        >
-          <span className="text-sm font-bold">{r.cat}</span>
-          <div className="flex flex-col gap-1">
-            <RankBar rank={r.rank} total={TOTAL_TEAMS} />
-            {!categoryStandings && (
-              <input
-                type="number"
-                min={1}
-                max={TOTAL_TEAMS}
-                value={manualRanks[r.cat] ?? 6}
-                onChange={e => setManualRanks(prev => ({ ...prev, [r.cat]: Number(e.target.value) }))}
-                className="w-10 text-[10px] font-mono border-b border-black/20 bg-transparent outline-none"
-              />
-            )}
-          </div>
-          <span className="font-mono text-sm">{r.pts.toFixed(1)}</span>
-          <span className={`font-mono text-sm font-bold ${r.ptsToNext > 0 ? 'text-red-500' : 'text-green-600'}`}>
-            {r.ptsToNext > 0 ? `−${r.ptsToNext.toFixed(1)}` : '#1'}
-          </span>
-          <span className="text-xs opacity-60 font-mono">
-            {r.denomCost != null
-              ? `${r.denomCost} ${r.cat}`
-              : '—'}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      className="flex flex-col gap-8"
-    >
-      <header className="flex justify-between items-end">
-        <div>
-          <h2 className="text-4xl font-serif italic mb-2">SGP Gap Analysis</h2>
-          <p className="text-sm opacity-60">Where you stand · what it costs to move up</p>
-        </div>
-      </header>
-
-      <GapTable label="Batting" data={batting} />
-      <GapTable label="Pitching" data={pitching} />
-
-      {/* Supporting data */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
-          <h3 className="font-serif italic text-xl mb-4">SGP Denominators</h3>
-          <p className="text-xs opacity-50 mb-4">Stats needed to gain 1 roto point in each category</p>
-          <div className="grid grid-cols-2 gap-3">
-            {SGP_DENOMINATORS.map((sgp, i) => (
-              <div key={`${sgp.cat}-${i}`} className="flex justify-between items-center p-3 bg-[#F8F8F8] rounded-lg">
-                <span className="text-xs font-bold opacity-60">{sgp.cat}</span>
-                <span className="font-mono text-sm">{sgp.denom}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-[#141414] text-white p-6 rounded-2xl shadow-lg">
-          <h3 className="font-serif italic text-xl mb-1">FAAB Budget</h3>
-          <p className="text-[10px] uppercase opacity-50 mb-5 tracking-widest">EYJ · $120 Starting</p>
-          <div className="flex items-end gap-3 mb-4">
-            <span className="font-mono text-5xl font-bold text-[#F27D26]">${faabBudget}</span>
-            <span className="text-sm opacity-50 mb-1">remaining</span>
-          </div>
-          <div className="h-2 bg-white/10 rounded-full overflow-hidden mb-3">
-            <div
-              className="h-full bg-[#F27D26] rounded-full transition-all"
-              style={{ width: `${(faabBudget / 120) * 100}%` }}
-            />
-          </div>
-          <div className="flex justify-between text-[10px] opacity-50">
-            <span>${120 - faabBudget} spent</span>
-            <span>$120 total</span>
-          </div>
-          <div className="mt-6 pt-5 border-t border-white/10">
-            <p className="text-[10px] uppercase opacity-50 mb-3 tracking-widest">League Draft Budgets</p>
-            <div className="flex flex-col gap-1">
-              {TEAM_BUDGETS.sort((a, b) => b.budget - a.budget).map((team, i) => (
-                <div key={`${team.team}-${i}`} className="flex justify-between items-center px-2 py-1.5 hover:bg-white/5 rounded transition-colors">
-                  <span className={`text-xs ${team.team === 'EYJ' ? 'font-bold text-[#F27D26]' : 'opacity-70'}`}>{team.team}</span>
-                  <span className="font-mono text-xs opacity-70">${team.budget}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
 
 // ─── Data View ───────────────────────────────────────────────────────────────
 
