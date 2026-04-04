@@ -33,7 +33,7 @@ import {
   ABBREV_TO_FULLNAME,
   MINOR_LEAGUE_PICKS,
 } from './constants';
-import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry, TradeLogEntry, FaabBidEntry } from './types';
+import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry, TradeLogEntry, FaabBidEntry, PlayerStat, PlayerProjection } from './types';
 
 import {
   mapRosterData,
@@ -47,6 +47,8 @@ import {
   parseCategoryStandings,
   parseLeagueRoster,
   parseFreeAgents,
+  parseCBSStats,
+  parseSteamerProjections,
   detectDataType,
   parseCSVText,
   DataType
@@ -75,6 +77,8 @@ export default function App() {
   const [faabBudget, setFaabBudget] = useState(92);
   const [tradeLog, setTradeLog] = useState<TradeLogEntry[]>([]);
   const [faabBidLog, setFaabBidLog] = useState<FaabBidEntry[]>([]);
+  const [parsedStats, setParsedStats] = useState<PlayerStat[] | null>(null);
+  const [parsedProjections, setParsedProjections] = useState<PlayerProjection[] | null>(null);
 
   // Central handler: apply parsed data by type. Used by both auto-load and manual import.
   const applyParsedData = (type: DataType, rawData: any[], csvText: string) => {
@@ -120,6 +124,23 @@ export default function App() {
         const newPlayers = incoming.filter(p => !existingNames.has(p.name));
         return [...prev, ...newPlayers];
       });
+    } else if (type === 'stats') {
+      const incoming = parseCBSStats(rawData);
+      // Merge batting + pitching uploads — deduplicate by name+isPitcher
+      setParsedStats(prev => {
+        if (!prev) return incoming;
+        const key = (s: PlayerStat) => `${s.name}|${s.isPitcher}`;
+        const existingKeys = new Set(prev.map(key));
+        return [...prev, ...incoming.filter(s => !existingKeys.has(key(s)))];
+      });
+    } else if (type === 'projections') {
+      const incoming = parseSteamerProjections(rawData);
+      setParsedProjections(prev => {
+        if (!prev) return incoming;
+        const key = (p: PlayerProjection) => `${p.name}|${p.isPitcher}`;
+        const existingKeys = new Set(prev.map(key));
+        return [...prev, ...incoming.filter(p => !existingKeys.has(key(p)))];
+      });
     }
     if (type !== 'unknown') {
       setDataTimestamps(prev => ({ ...prev, [type]: new Date().toISOString() }));
@@ -157,6 +178,10 @@ export default function App() {
       if (tl) setTradeLog(JSON.parse(tl));
       const bl = localStorage.getItem('eyj_faabbidlog');
       if (bl) setFaabBidLog(JSON.parse(bl));
+      const stats = localStorage.getItem('eyj_stats');
+      if (stats) setParsedStats(JSON.parse(stats));
+      const projs = localStorage.getItem('eyj_projections');
+      if (projs) setParsedProjections(JSON.parse(projs));
     } catch (err) {
       console.error('Failed to restore from localStorage', err);
     }
@@ -178,11 +203,15 @@ export default function App() {
   useEffect(() => { localStorage.setItem('eyj_activeTab', activeTab); }, [activeTab]);
   useEffect(() => { localStorage.setItem('eyj_tradelog', JSON.stringify(tradeLog)); }, [tradeLog]);
   useEffect(() => { localStorage.setItem('eyj_faabbidlog', JSON.stringify(faabBidLog)); }, [faabBidLog]);
+  useEffect(() => { if (parsedStats) localStorage.setItem('eyj_stats', JSON.stringify(parsedStats)); }, [parsedStats]);
+  useEffect(() => { if (parsedProjections) localStorage.setItem('eyj_projections', JSON.stringify(parsedProjections)); }, [parsedProjections]);
 
   const handleResetData = () => {
-    ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings','eyj_leagueroster','eyj_transactions','eyj_freeagents','eyj_timestamps','eyj_tradelog','eyj_faabbidlog'].forEach(k => localStorage.removeItem(k));
+    ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings','eyj_leagueroster','eyj_transactions','eyj_freeagents','eyj_timestamps','eyj_tradelog','eyj_faabbidlog','eyj_stats','eyj_projections'].forEach(k => localStorage.removeItem(k));
     setTradeLog([]);
     setFaabBidLog([]);
+    setParsedStats(null);
+    setParsedProjections(null);
     setParsedRoster(null);
     setParsedStandings(null);
     setParsedFaab(null);
@@ -269,6 +298,8 @@ export default function App() {
               tradeLog={tradeLog}
               parsedStatcast={parsedStatcast}
               parsedStuff={parsedStuff}
+              parsedStats={parsedStats}
+              parsedProjections={parsedProjections}
               roster={(parsedRoster && parsedRoster.length > 0) ? parsedRoster : INITIAL_ROSTER}
             />
           )}
@@ -289,6 +320,10 @@ export default function App() {
               onSaveFaabBid={(entry) => setFaabBidLog(prev => [entry, ...prev])}
               onUpdateFaabBid={(id, patch) => setFaabBidLog(prev => prev.map(e => e.id === id ? { ...e, ...patch } : e))}
               onDeleteFaabBid={(id) => setFaabBidLog(prev => prev.filter(e => e.id !== id))}
+              parsedStats={parsedStats}
+              parsedProjections={parsedProjections}
+              parsedStatcast={parsedStatcast}
+              parsedStuff={parsedStuff}
             />
           )}
           {activeTab === 'trades' && (
@@ -309,6 +344,8 @@ export default function App() {
               parsedRoster={parsedRoster}
               parsedStatcast={parsedStatcast}
               parsedStuff={parsedStuff}
+              parsedStats={parsedStats}
+              parsedProjections={parsedProjections}
               freeAgents={freeAgents}
               categoryStandings={parsedCategoryStandings}
               transactions={transactions}
@@ -321,12 +358,16 @@ export default function App() {
               onDataLoaded={applyParsedData}
               onResetData={handleResetData}
               onClearFreeAgents={() => { setFreeAgents([]); localStorage.removeItem('eyj_freeagents'); }}
+              onClearStats={() => { setParsedStats(null); localStorage.removeItem('eyj_stats'); }}
+              onClearProjections={() => { setParsedProjections(null); localStorage.removeItem('eyj_projections'); }}
               dataTimestamps={dataTimestamps}
               parsedRoster={parsedRoster}
               parsedStandings={parsedStandings}
               parsedFaab={parsedFaab}
               parsedStatcast={parsedStatcast}
               parsedStuff={parsedStuff}
+              parsedStats={parsedStats}
+              parsedProjections={parsedProjections}
               leagueRoster={leagueRoster}
               freeAgents={freeAgents}
               transactions={transactions}
@@ -352,13 +393,15 @@ function NavItem({ active, onClick, icon, label }: { active: boolean, onClick: (
   );
 }
 
-function DashboardView({ standings, leagueDetails, transactions, tradeLog, parsedStatcast, parsedStuff, roster }: {
+function DashboardView({ standings, leagueDetails, transactions, tradeLog, parsedStatcast, parsedStuff, parsedStats, parsedProjections, roster }: {
   standings: HistoricalStanding[];
   leagueDetails: LeagueDetails | null;
   transactions: TransactionEntry[] | null;
   tradeLog: TradeLogEntry[];
   parsedStatcast: any[] | null;
   parsedStuff: any[] | null;
+  parsedStats: PlayerStat[] | null;
+  parsedProjections: PlayerProjection[] | null;
   roster: Player[];
   key?: any;
 }) {
@@ -421,9 +464,9 @@ function DashboardView({ standings, leagueDetails, transactions, tradeLog, parse
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Player Signals */}
         {(() => {
-          const lastN = (n: string) => n.toLowerCase().split(' ').slice(-1)[0].replace(/[^a-z]/g, '');
           const nm = (a: string, b: string) => {
             const norm = (s: string) => s.toLowerCase().replace(/[^a-z ]/g, '').trim();
+            const lastN = (s: string) => norm(s).split(' ').slice(-1)[0];
             return norm(a) === norm(b) || lastN(a) === lastN(b);
           };
           const activePitchers = roster.filter(p => p.pos.some(x => ['SP','RP','P'].includes(x)) && !p.isMinor);
@@ -432,33 +475,66 @@ function DashboardView({ standings, leagueDetails, transactions, tradeLog, parse
           type Signal = { name: string; label: string; stat: string; dir: 'up' | 'down' };
           const signals: Signal[] = [];
 
+          // ── Pitchers: priority stack ──
           activePitchers.forEach(p => {
-            const m = parsedStuff?.find(d => nm(d.name, p.name));
-            if (!m) return;
-            const gap = (m.pitchingPlus || 0) - (m.stuffPlus || 0);
-            if (gap < -8) signals.push({ name: p.name, label: 'Hold · Upside', stat: `Stuff+ ${m.stuffPlus}`, dir: 'up' });
-            if (gap > 8)  signals.push({ name: p.name, label: 'Sell high',    stat: `Pitch+ ${m.pitchingPlus}`, dir: 'down' });
+            const stuff = parsedStuff?.find(d => nm(d.name, p.name));
+            const stat  = parsedStats?.find(d => nm(d.name, p.name) && d.isPitcher);
+            const proj  = parsedProjections?.find(d => nm(d.name, p.name) && d.isPitcher);
+
+            // 1. Stuff+ vs Pitching+ gap
+            if (stuff?.stuffPlus && stuff?.pitchingPlus) {
+              const gap = stuff.pitchingPlus - stuff.stuffPlus;
+              if (gap < -8) { signals.push({ name: p.name, label: 'Hold · Upside', stat: `Stuff+ ${stuff.stuffPlus} / Pitch+ ${stuff.pitchingPlus}`, dir: 'up' }); return; }
+              if (gap > 8)  { signals.push({ name: p.name, label: 'Sell high', stat: `Pitch+ ${stuff.pitchingPlus}`, dir: 'down' }); return; }
+            }
+            // 2. ERA vs Steamer projection gap
+            if (stat?.era && proj?.projEra && proj.projEra > 0) {
+              const diff = stat.era - proj.projEra;
+              if (diff > 0.60)  { signals.push({ name: p.name, label: 'ERA regression risk', stat: `ERA ${stat.era.toFixed(2)} vs proj ${proj.projEra.toFixed(2)}`, dir: 'down' }); return; }
+              if (diff < -0.60) { signals.push({ name: p.name, label: 'ERA outperforming', stat: `ERA ${stat.era.toFixed(2)} vs proj ${proj.projEra.toFixed(2)}`, dir: 'up' }); return; }
+            }
+            // 3. Elite Stuff+ alone is worth surfacing on dashboard
+            if (stuff?.stuffPlus && stuff.stuffPlus >= 112) {
+              signals.push({ name: p.name, label: 'Elite stuff', stat: `Stuff+ ${stuff.stuffPlus}`, dir: 'up' });
+            }
           });
 
+          // ── Batters: priority stack ──
           activeBatters.forEach(p => {
-            const m = parsedStatcast?.find(d => nm(d.name, p.name));
-            if (!m) return;
-            const xw = m.xwoba || 0;
-            if (xw > 0.370) signals.push({ name: p.name, label: 'Elite contact',  stat: `xwOBA ${xw.toFixed(3)}`, dir: 'up' });
-            else if (xw > 0 && xw < 0.290) signals.push({ name: p.name, label: 'Sell high', stat: `xwOBA ${xw.toFixed(3)}`, dir: 'down' });
+            const sc   = parsedStatcast?.find(d => nm(d.name, p.name));
+            const stat = parsedStats?.find(d => nm(d.name, p.name) && !d.isPitcher);
+            const proj = parsedProjections?.find(d => nm(d.name, p.name) && !d.isPitcher);
+
+            // 1. xwOBA extremes
+            if (sc?.xwoba) {
+              const xw = sc.xwoba;
+              if (xw >= 0.370) { signals.push({ name: p.name, label: 'Elite contact', stat: `xwOBA ${xw.toFixed(3)}`, dir: 'up' }); return; }
+              if (xw < 0.295 && xw > 0) { signals.push({ name: p.name, label: 'Weak contact', stat: `xwOBA ${xw.toFixed(3)}`, dir: 'down' }); return; }
+            }
+            // 2. AVG vs Steamer projection gap
+            if (stat?.avg && proj?.projAvg && proj.projAvg > 0) {
+              const diff = (stat.avg || 0) - proj.projAvg;
+              if (diff > 0.035)  { signals.push({ name: p.name, label: 'Sell high', stat: `AVG ${stat.avg?.toFixed(3)} vs proj ${proj.projAvg.toFixed(3)}`, dir: 'down' }); return; }
+              if (diff < -0.035) { signals.push({ name: p.name, label: 'Buy low', stat: `AVG ${stat.avg?.toFixed(3)} vs proj ${proj.projAvg.toFixed(3)}`, dir: 'up' }); return; }
+            }
           });
 
-          const upSignals   = signals.filter(s => s.dir === 'up').slice(0, 4);
-          const downSignals = signals.filter(s => s.dir === 'down').slice(0, 3);
+          const upSignals   = signals.filter(s => s.dir === 'up').slice(0, 5);
+          const downSignals = signals.filter(s => s.dir === 'down').slice(0, 4);
+          const hasData = parsedStuff || parsedStatcast || parsedStats || parsedProjections;
 
           return (
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-black/5">
               <div className="flex justify-between items-center mb-5">
                 <h3 className="font-serif italic text-xl">Player Signals</h3>
-                <span className="text-[10px] opacity-40 italic">Stuff+ / Statcast derived</span>
+                <span className="text-[10px] opacity-40 italic">Stuff+ · Statcast · CBS · Steamer</span>
               </div>
               {signals.length === 0 ? (
-                <p className="text-sm opacity-40 italic">Upload Statcast and Stuff+ in the Data tab to see player-level signals here.</p>
+                <p className="text-sm opacity-40 italic">
+                  {hasData
+                    ? 'No strong signals detected for your active roster right now.'
+                    : 'Upload Statcast, Stuff+, CBS stats, or Steamer projections in the Data tab to see player signals here.'}
+                </p>
               ) : (
                 <div className="flex flex-col gap-2">
                   {upSignals.map(s => (
@@ -568,12 +644,104 @@ function keeperYearsLeft(contract: string): number {
   return 0;
 }
 
+// ─── Shared player signal utility ────────────────────────────────────────────
+
+// 'up' = green (good), 'down' = orange (sell/concern), 'warn' = yellow (watch), 'neutral' = gray (data shown, no extreme)
+type PlayerSignal = { label: string; stat: string; dir: 'up' | 'down' | 'warn' | 'neutral' };
+
+function getPlayerSignal(
+  player: Player,
+  parsedStuff: any[] | null,
+  parsedStatcast: any[] | null,
+  parsedStats: PlayerStat[] | null,
+  parsedProjections: PlayerProjection[] | null,
+): PlayerSignal | null {
+  const nm = (a: string, b: string) => {
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z ]/g, '').trim();
+    const lastN = (s: string) => norm(s).split(' ').slice(-1)[0];
+    return norm(a) === norm(b) || lastN(a) === lastN(b);
+  };
+  const isPitcher = player.pos.some(x => ['SP','RP','P'].includes(x));
+
+  if (isPitcher) {
+    const stuff = parsedStuff?.find(d => nm(d.name, player.name));
+    const stat  = parsedStats?.find(d => nm(d.name, player.name) && d.isPitcher);
+    const proj  = parsedProjections?.find(d => nm(d.name, player.name) && d.isPitcher);
+
+    // Priority 1: Stuff+ vs Pitching+ gap (strong signal)
+    if (stuff?.stuffPlus && stuff?.pitchingPlus) {
+      const gap = stuff.pitchingPlus - stuff.stuffPlus;
+      if (gap < -8) return { label: 'Hold · Upside', stat: `Stuff+ ${stuff.stuffPlus} / Pitch+ ${stuff.pitchingPlus}`, dir: 'up' };
+      if (gap > 8)  return { label: 'Sell high', stat: `Pitch+ ${stuff.pitchingPlus}`, dir: 'down' };
+    }
+    // Priority 2: ERA vs projection gap
+    if (stat?.era && proj?.projEra && proj.projEra > 0) {
+      const diff = stat.era - proj.projEra;
+      if (diff > 0.60)  return { label: 'ERA regression risk', stat: `ERA ${stat.era.toFixed(2)} (proj ${proj.projEra.toFixed(2)})`, dir: 'warn' };
+      if (diff < -0.60) return { label: 'ERA outperforming', stat: `ERA ${stat.era.toFixed(2)} (proj ${proj.projEra.toFixed(2)})`, dir: 'up' };
+    }
+    // Fallback: show Stuff+ metric if we have it (color-coded, no threshold required)
+    if (stuff?.stuffPlus) {
+      const s = stuff.stuffPlus;
+      const dir: PlayerSignal['dir'] = s >= 110 ? 'up' : s >= 95 ? 'neutral' : 'warn';
+      const label = s >= 110 ? 'Elite stuff' : s >= 95 ? 'Average stuff' : 'Below avg';
+      return { label, stat: `Stuff+ ${s}`, dir };
+    }
+    // Fallback: show ERA from CBS stats
+    if (stat?.era && stat.ip && stat.ip > 5) {
+      const dir: PlayerSignal['dir'] = stat.era < 3.50 ? 'up' : stat.era > 5.00 ? 'warn' : 'neutral';
+      return { label: `ERA ${stat.era.toFixed(2)}`, stat: `${Math.floor(stat.ip)} IP`, dir };
+    }
+  } else {
+    const sc   = parsedStatcast?.find(d => nm(d.name, player.name));
+    const stat = parsedStats?.find(d => nm(d.name, player.name) && !d.isPitcher);
+    const proj = parsedProjections?.find(d => nm(d.name, player.name) && !d.isPitcher);
+
+    // Priority 1: xwOBA threshold
+    if (sc?.xwoba) {
+      const xw = sc.xwoba;
+      if (xw >= 0.370) return { label: 'Elite contact', stat: `xwOBA ${xw.toFixed(3)}`, dir: 'up' };
+      if (xw < 0.300 && xw > 0) return { label: 'Weak contact', stat: `xwOBA ${xw.toFixed(3)}`, dir: 'warn' };
+      // Show the metric even if not extreme
+      const dir: PlayerSignal['dir'] = xw >= 0.340 ? 'up' : xw >= 0.310 ? 'neutral' : 'warn';
+      return { label: `xwOBA ${xw.toFixed(3)}`, stat: sc.ev ? `EV ${sc.ev.toFixed(1)}` : '', dir };
+    }
+    // Priority 2: AVG vs projection gap
+    if (stat?.avg && proj?.projAvg && proj.projAvg > 0) {
+      const diff = (stat.avg || 0) - proj.projAvg;
+      if (diff > 0.035)  return { label: 'Sell high', stat: `AVG ${stat.avg?.toFixed(3)} (proj ${proj.projAvg.toFixed(3)})`, dir: 'down' };
+      if (diff < -0.035) return { label: 'Buy low', stat: `AVG ${stat.avg?.toFixed(3)} (proj ${proj.projAvg.toFixed(3)})`, dir: 'up' };
+    }
+    // Fallback: show AVG from CBS if we have it
+    if (stat?.avg && stat.ab && stat.ab > 10) {
+      const dir: PlayerSignal['dir'] = stat.avg >= 0.280 ? 'up' : stat.avg < 0.220 ? 'warn' : 'neutral';
+      return { label: `AVG ${stat.avg.toFixed(3)}`, stat: `${stat.ab} AB`, dir };
+    }
+  }
+  return null;
+}
+
+function SignalChip({ signal }: { signal: PlayerSignal }) {
+  const cls = signal.dir === 'up'      ? 'bg-green-50 text-green-700'
+            : signal.dir === 'down'    ? 'bg-orange-50 text-orange-700'
+            : signal.dir === 'warn'    ? 'bg-yellow-50 text-yellow-700'
+            :                            'bg-black/5 text-black/40';
+  const arrow = signal.dir === 'up' ? '↑' : signal.dir === 'down' ? '↓' : signal.dir === 'warn' ? '⚠' : '·';
+  const titleText = signal.stat ? `${signal.label} — ${signal.stat}` : signal.label;
+  return (
+    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 whitespace-nowrap ${cls}`} title={titleText}>
+      {arrow} {signal.label}
+    </span>
+  );
+}
+
 // ─── Roster Management Mega-Tab ───────────────────────────────────────────────
 
 function ManageView({
   roster, leagueDetails, faabBudget, onBudgetChange,
   parsedFaab, transactions, categoryStandings, leagueRoster, freeAgents, dataTimestamps,
   faabBidLog, onSaveFaabBid, onUpdateFaabBid, onDeleteFaabBid,
+  parsedStats, parsedProjections, parsedStatcast, parsedStuff,
 }: {
   roster: Player[];
   leagueDetails: LeagueDetails | null;
@@ -589,6 +757,10 @@ function ManageView({
   onSaveFaabBid: (entry: FaabBidEntry) => void;
   onUpdateFaabBid: (id: string, patch: Partial<FaabBidEntry>) => void;
   onDeleteFaabBid: (id: string) => void;
+  parsedStats: PlayerStat[] | null;
+  parsedProjections: PlayerProjection[] | null;
+  parsedStatcast: any[] | null;
+  parsedStuff: any[] | null;
   key?: any;
 }) {
   const [section, setSection] = useState<'roster' | 'keepers' | 'adddrop' | 'minors'>('roster');
@@ -695,20 +867,24 @@ function ManageView({
                     <p className="text-[10px] uppercase font-bold tracking-widest opacity-50">{group.label}</p>
                     <p className="text-[10px] opacity-40">{group.players.length} players · ${group.players.reduce((s,p)=>s+p.salary,0)} salary</p>
                   </div>
-                  {group.players.map(p => (
-                    <button
-                      key={p.id}
-                      onClick={() => setSelectedPlayer(selectedPlayer?.id === p.id ? null : p)}
-                      className={`w-full flex items-center gap-3 px-5 py-3 border-b border-black/5 last:border-0 hover:bg-[#F8F8F8] transition-colors text-left ${selectedPlayer?.id === p.id ? 'bg-[#FFF4EC]' : ''}`}
-                    >
-                      <span className="text-[10px] font-bold text-center bg-black/5 rounded px-1.5 py-0.5 w-14 shrink-0">{p.pos.join('/')}</span>
-                      <span className="flex-1 text-sm font-medium">{p.name}</span>
-                      <span className="text-[10px] opacity-40 shrink-0">{p.team}</span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${p.contract.startsWith('K') || p.contract.startsWith('F') ? 'bg-[#F27D26]/10 text-[#F27D26]' : p.contract.startsWith('M') ? 'bg-purple-100 text-purple-700' : 'bg-black/5 opacity-60'}`}>{p.contract}</span>
-                      <span className="font-mono text-sm w-10 text-right shrink-0">${p.salary}</span>
-                      <ChevronDown size={14} className={`opacity-30 shrink-0 transition-transform ${selectedPlayer?.id === p.id ? 'rotate-180' : ''}`} />
-                    </button>
-                  ))}
+                  {group.players.map(p => {
+                    const sig = getPlayerSignal(p, parsedStuff, parsedStatcast, parsedStats, parsedProjections);
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => setSelectedPlayer(selectedPlayer?.id === p.id ? null : p)}
+                        className={`w-full flex items-center gap-3 px-5 py-3 border-b border-black/5 last:border-0 hover:bg-[#F8F8F8] transition-colors text-left ${selectedPlayer?.id === p.id ? 'bg-[#FFF4EC]' : ''}`}
+                      >
+                        <span className="text-[10px] font-bold text-center bg-black/5 rounded px-1.5 py-0.5 w-14 shrink-0">{p.pos.join('/')}</span>
+                        <span className="flex-1 text-sm font-medium">{p.name}</span>
+                        {sig && <SignalChip signal={sig} />}
+                        <span className="text-[10px] opacity-40 shrink-0">{p.team}</span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${p.contract.startsWith('K') || p.contract.startsWith('F') ? 'bg-[#F27D26]/10 text-[#F27D26]' : p.contract.startsWith('M') ? 'bg-purple-100 text-purple-700' : 'bg-black/5 opacity-60'}`}>{p.contract}</span>
+                        <span className="font-mono text-sm w-10 text-right shrink-0">${p.salary}</span>
+                        <ChevronDown size={14} className={`opacity-30 shrink-0 transition-transform ${selectedPlayer?.id === p.id ? 'rotate-180' : ''}`} />
+                      </button>
+                    );
+                  })}
                 </div>
               )
             ))}
@@ -1983,7 +2159,7 @@ interface StagedFile {
   confidence: 'high' | 'low';
 }
 
-const DATA_TYPES: Exclude<DataType, 'unknown'>[] = ['leagueroster', 'freeagents', 'roster', 'standings', 'transactions', 'faab', 'statcast', 'stuff'];
+const DATA_TYPES: Exclude<DataType, 'unknown'>[] = ['leagueroster', 'freeagents', 'roster', 'standings', 'transactions', 'faab', 'statcast', 'stuff', 'stats', 'projections'];
 const TYPE_LABELS: Record<DataType, string> = {
   leagueroster: 'League Rosters (All Teams)',
   freeagents: 'Available Players (FA List)',
@@ -1993,15 +2169,19 @@ const TYPE_LABELS: Record<DataType, string> = {
   faab: 'FAAB Bid Log',
   statcast: 'Statcast',
   stuff: 'Stuff+',
+  stats: 'CBS YTD Stats',
+  projections: 'Steamer RoS Projections',
   unknown: '? Unknown',
 };
 
 function StrategyLabView({
-  parsedRoster, parsedStatcast, parsedStuff, freeAgents, categoryStandings, transactions, faabBudget,
+  parsedRoster, parsedStatcast, parsedStuff, parsedStats, parsedProjections, freeAgents, categoryStandings, transactions, faabBudget,
 }: {
   parsedRoster: Player[] | null;
   parsedStatcast: any[] | null;
   parsedStuff: any[] | null;
+  parsedStats: PlayerStat[] | null;
+  parsedProjections: PlayerProjection[] | null;
   freeAgents: LeaguePlayer[];
   categoryStandings: LiveCategoryStanding[] | null;
   transactions: TransactionEntry[] | null;
@@ -2019,21 +2199,65 @@ function StrategyLabView({
   const rosterNames = new Set(effectiveRoster.map(p => p.name.toLowerCase().replace(/[^a-z]/g, '')));
   const isOnRoster = (name: string) => rosterNames.has(name.toLowerCase().replace(/[^a-z]/g, ''));
 
-  const radarBatters = (parsedStatcast || [])
-    .filter(d => (d.xwoba || 0) > 0.350 && !isOnRoster(d.name))
-    .map(d => {
-      const fa = freeAgents.find(p => nameMatch(p.name, d.name));
-      if (!fa) return null;
-      return { name: d.name, pos: fa.pos.join('/'), stat: `xwOBA ${d.xwoba?.toFixed(3)}`, ev: d.ev, score: d.xwoba || 0 };
-    }).filter(Boolean).sort((a: any, b: any) => b.score - a.score).slice(0, 5) as any[];
+  // Batters: anchor on xwOBA > .350, enrich with CBS stats and Steamer projections
+  const radarBatters = (() => {
+    // Collect candidate names from Statcast (quality of contact signal)
+    const statcastCandidates = (parsedStatcast || [])
+      .filter(d => (d.xwoba || 0) > 0.350 && !isOnRoster(d.name));
 
-  const radarPitchers = (parsedStuff || [])
-    .filter((d: any) => (d.stuffPlus || 0) > 108 && !isOnRoster(d.name))
-    .map((d: any) => {
-      const fa = freeAgents.find(p => nameMatch(p.name, d.name));
+    return statcastCandidates.map(d => {
+      const fa   = freeAgents.find(p => nameMatch(p.name, d.name));
       if (!fa) return null;
-      return { name: d.name, pos: fa.pos.join('/'), stat: `Stuff+ ${d.stuffPlus}`, score: d.stuffPlus || 0 };
+      const stat = parsedStats?.find(s => nameMatch(s.name, d.name) && !s.isPitcher);
+      const proj = parsedProjections?.find(s => nameMatch(s.name, d.name) && !s.isPitcher);
+
+      // Build context lines
+      const context: string[] = [`xwOBA ${d.xwoba?.toFixed(3)}`];
+      if (d.ev) context.push(`EV ${d.ev.toFixed(1)}`);
+      if (stat?.avg) context.push(`AVG ${stat.avg.toFixed(3)}`);
+      if (stat?.hr)  context.push(`${stat.hr} HR`);
+      if (proj?.projHr) context.push(`proj ${proj.projHr} HR RoS`);
+      if (proj?.projAvg) context.push(`proj .${Math.round(proj.projAvg * 1000)} AVG`);
+
+      return {
+        name: d.name,
+        pos: fa.pos.join('/'),
+        mlbTeam: fa.mlbTeam,
+        stat: context[0],
+        context: context.slice(1).join(' · '),
+        score: d.xwoba || 0,
+      };
     }).filter(Boolean).sort((a: any, b: any) => b.score - a.score).slice(0, 5) as any[];
+  })();
+
+  // Pitchers: anchor on Stuff+ > 108, enrich with CBS stats and Steamer projections
+  const radarPitchers = (() => {
+    const stuffCandidates = (parsedStuff || [])
+      .filter((d: any) => (d.stuffPlus || 0) > 108 && !isOnRoster(d.name));
+
+    return stuffCandidates.map((d: any) => {
+      const fa   = freeAgents.find(p => nameMatch(p.name, d.name));
+      if (!fa) return null;
+      const stat = parsedStats?.find(s => nameMatch(s.name, d.name) && s.isPitcher);
+      const proj = parsedProjections?.find(s => nameMatch(s.name, d.name) && s.isPitcher);
+
+      const context: string[] = [`Stuff+ ${d.stuffPlus}`];
+      if (d.pitchingPlus) context.push(`Pitch+ ${d.pitchingPlus}`);
+      if (stat?.era)  context.push(`ERA ${stat.era.toFixed(2)}`);
+      if (stat?.ip)   context.push(`${Math.floor(stat.ip)} IP`);
+      if (proj?.projEra) context.push(`proj ERA ${proj.projEra.toFixed(2)}`);
+      if (proj?.projIp)  context.push(`proj ${proj.projIp} IP`);
+
+      return {
+        name: d.name,
+        pos: fa.pos.join('/'),
+        mlbTeam: fa.mlbTeam,
+        stat: context[0],
+        context: context.slice(1).join(' · '),
+        score: d.stuffPlus || 0,
+      };
+    }).filter(Boolean).sort((a: any, b: any) => b.score - a.score).slice(0, 5) as any[];
+  })();
 
   const weakCatNames = categoryStandings?.filter(c => c.myRank > 8).map(c => c.category) ?? [];
 
@@ -2143,15 +2367,24 @@ function StrategyLabView({
             <p className="text-[10px] uppercase opacity-50 mb-3 tracking-widest">Batters — xwOBA &gt; .350</p>
             <div className="flex flex-col gap-2">
               {radarBatters.map((p: any, i: number) => (
-                <div key={i} className="flex items-center justify-between py-2 border-b border-white/10 last:border-0">
-                  <div>
-                    <span className="text-sm font-bold">{p.name}</span>
-                    <span className="text-[10px] opacity-40 ml-2">{p.pos}</span>
+                <div key={i} className="py-2 border-b border-white/10 last:border-0">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold">{p.name}</span>
+                      <span className="text-[10px] opacity-40">{p.pos}</span>
+                      {p.mlbTeam && <span className="text-[10px] opacity-30">{p.mlbTeam}</span>}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <a
+                        href={`https://www.fangraphs.com/players/${p.name.toLowerCase().replace(/\s+/g,'-')}`}
+                        target="_blank" rel="noopener noreferrer"
+                        className="text-[10px] opacity-30 hover:opacity-70 underline"
+                        onClick={e => e.stopPropagation()}
+                      >Schedule ↗</a>
+                      <span className="font-mono text-[#F27D26] font-bold text-sm">{p.stat}</span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    {p.ev && <span className="text-[10px] opacity-50">{p.ev} EV</span>}
-                    <span className="font-mono text-[#F27D26] font-bold text-sm">{p.stat}</span>
-                  </div>
+                  {p.context && <p className="text-[10px] opacity-40 mt-0.5">{p.context}</p>}
                 </div>
               ))}
             </div>
@@ -2163,12 +2396,24 @@ function StrategyLabView({
             <p className="text-[10px] uppercase opacity-50 mb-3 tracking-widest">Pitchers — Stuff+ &gt; 108</p>
             <div className="flex flex-col gap-2">
               {radarPitchers.map((p: any, i: number) => (
-                <div key={i} className="flex items-center justify-between py-2 border-b border-white/10 last:border-0">
-                  <div>
-                    <span className="text-sm font-bold">{p.name}</span>
-                    <span className="text-[10px] opacity-40 ml-2">{p.pos}</span>
+                <div key={i} className="py-2 border-b border-white/10 last:border-0">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold">{p.name}</span>
+                      <span className="text-[10px] opacity-40">{p.pos}</span>
+                      {p.mlbTeam && <span className="text-[10px] opacity-30">{p.mlbTeam}</span>}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <a
+                        href={`https://www.fangraphs.com/players/${p.name.toLowerCase().replace(/\s+/g,'-')}`}
+                        target="_blank" rel="noopener noreferrer"
+                        className="text-[10px] opacity-30 hover:opacity-70 underline"
+                        onClick={e => e.stopPropagation()}
+                      >Schedule ↗</a>
+                      <span className="font-mono text-[#F27D26] font-bold text-sm">{p.stat}</span>
+                    </div>
                   </div>
-                  <span className="font-mono text-[#F27D26] font-bold text-sm">{p.stat}</span>
+                  {p.context && <p className="text-[10px] opacity-40 mt-0.5">{p.context}</p>}
                 </div>
               ))}
             </div>
@@ -2403,12 +2648,16 @@ function DataView({
   onDataLoaded,
   onResetData,
   onClearFreeAgents,
+  onClearStats,
+  onClearProjections,
   dataTimestamps,
   parsedRoster,
   parsedStandings,
   parsedFaab,
   parsedStatcast,
   parsedStuff,
+  parsedStats,
+  parsedProjections,
   leagueRoster,
   freeAgents,
   transactions,
@@ -2416,12 +2665,16 @@ function DataView({
   onDataLoaded: (type: DataType, rawData: any[], csvText: string) => void;
   onResetData: () => void;
   onClearFreeAgents?: () => void;
+  onClearStats?: () => void;
+  onClearProjections?: () => void;
   dataTimestamps: Record<string, string>;
   parsedRoster: Player[] | null;
   parsedStandings: HistoricalStanding[] | null;
   parsedFaab: FaabEntry[] | null;
   parsedStatcast: any[] | null;
   parsedStuff: any[] | null;
+  parsedStats: PlayerStat[] | null;
+  parsedProjections: PlayerProjection[] | null;
   leagueRoster: Record<string, LeaguePlayer[]> | null;
   freeAgents: LeaguePlayer[];
   transactions: TransactionEntry[] | null;
@@ -2526,16 +2779,18 @@ function DataView({
     setPasteContent('');
   };
 
-  const hasAnyData = !!(parsedRoster || parsedStandings || parsedFaab || parsedStatcast || parsedStuff || leagueRoster || freeAgents.length > 0 || transactions);
+  const hasAnyData = !!(parsedRoster || parsedStandings || parsedFaab || parsedStatcast || parsedStuff || parsedStats || parsedProjections || leagueRoster || freeAgents.length > 0 || transactions);
 
   const dataStatus = [
-    { key: 'leagueroster', label: 'League Rosters', active: !!leagueRoster, count: leagueRoster ? `${Object.keys(leagueRoster).length} teams` : null },
-    { key: 'freeagents',   label: 'Available Players', active: freeAgents.length > 0, count: freeAgents.length > 0 ? `${freeAgents.length} players` : null },
-    { key: 'standings',    label: 'Standings',      active: !!parsedStandings, count: null },
-    { key: 'transactions', label: 'Transactions',   active: !!transactions, count: transactions ? `${transactions.length} entries` : null },
-    { key: 'statcast',     label: 'Statcast',       active: !!parsedStatcast, count: parsedStatcast ? `${parsedStatcast.length} players` : null },
-    { key: 'stuff',        label: 'Stuff+',         active: !!parsedStuff, count: parsedStuff ? `${parsedStuff.length} pitchers` : null },
-  ] as const;
+    { key: 'leagueroster', label: 'League Rosters', active: !!leagueRoster, count: leagueRoster ? `${Object.keys(leagueRoster).length} teams` : null, onClear: undefined as (() => void) | undefined },
+    { key: 'freeagents',   label: 'Available Players', active: freeAgents.length > 0, count: freeAgents.length > 0 ? `${freeAgents.length} players` : null, onClear: onClearFreeAgents },
+    { key: 'standings',    label: 'Standings',      active: !!parsedStandings, count: null, onClear: undefined },
+    { key: 'transactions', label: 'Transactions',   active: !!transactions, count: transactions ? `${transactions.length} entries` : null, onClear: undefined },
+    { key: 'statcast',     label: 'Statcast',       active: !!parsedStatcast, count: parsedStatcast ? `${parsedStatcast.length} players` : null, onClear: undefined },
+    { key: 'stuff',        label: 'Stuff+',         active: !!parsedStuff, count: parsedStuff ? `${parsedStuff.length} pitchers` : null, onClear: undefined },
+    { key: 'stats',        label: 'CBS YTD Stats',  active: !!parsedStats, count: parsedStats ? `${parsedStats.length} players` : null, onClear: onClearStats },
+    { key: 'projections',  label: 'Steamer Projections', active: !!parsedProjections, count: parsedProjections ? `${parsedProjections.length} players` : null, onClear: onClearProjections },
+  ];
 
   const CBS_SOURCES = [
     {
@@ -2620,6 +2875,52 @@ function DataView({
       ],
       icon: '📈',
     },
+    {
+      type: 'stats' as DataType,
+      label: 'CBS YTD Batting Stats',
+      url: 'https://www.cbssports.com/fantasy/baseball/stats/',
+      steps: [
+        '1. Click the link above → CBS Fantasy Baseball Stats',
+        '2. Select Batters · Year to Date · All teams',
+        '3. Scroll to bottom → "Export to CSV" or copy/paste into a .csv',
+      ],
+      icon: '🏟️',
+    },
+    {
+      type: 'stats' as DataType,
+      label: 'CBS YTD Pitching Stats',
+      url: 'https://www.cbssports.com/fantasy/baseball/stats/',
+      steps: [
+        '1. Click the link above → CBS Fantasy Baseball Stats',
+        '2. Select Pitchers · Year to Date · All teams',
+        '3. Scroll to bottom → "Export to CSV" or copy/paste into a .csv',
+        'Note: Upload batters and pitchers separately — they merge automatically.',
+      ],
+      icon: '⚡',
+    },
+    {
+      type: 'projections' as DataType,
+      label: 'Steamer RoS Batting Projections (FanGraphs)',
+      url: 'https://www.fangraphs.com/projections.aspx?pos=all&stats=bat&type=steamerr',
+      steps: [
+        '1. Click the link above → FanGraphs Steamer Rest-of-Season Batting',
+        '2. Make sure all columns are shown (click "Show All" if available)',
+        '3. Scroll to bottom → click the CSV export icon',
+      ],
+      icon: '🔭',
+    },
+    {
+      type: 'projections' as DataType,
+      label: 'Steamer RoS Pitching Projections (FanGraphs)',
+      url: 'https://www.fangraphs.com/projections.aspx?pos=all&stats=pit&type=steamerr',
+      steps: [
+        '1. Click the link above → FanGraphs Steamer Rest-of-Season Pitching',
+        '2. Make sure all columns are shown (click "Show All" if available)',
+        '3. Scroll to bottom → click the CSV export icon',
+        'Note: Upload batters and pitchers separately — they merge automatically.',
+      ],
+      icon: '📡',
+    },
   ];
 
   const formatTs = (iso: string) => {
@@ -2650,12 +2951,17 @@ function DataView({
       </header>
 
       {/* Status summary */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        {dataStatus.map(({ key, label, active, count }) => (
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+        {dataStatus.map(({ key, label, active, count, onClear }) => (
           <div key={key} className={`p-4 rounded-xl border flex flex-col gap-2 ${active ? 'bg-green-50 border-green-200' : 'bg-white border-black/5'}`}>
-            <div className="flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full shrink-0 ${active ? 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]' : 'bg-black/15'}`} />
-              <span className="text-[10px] uppercase font-bold tracking-widest opacity-60">{active ? 'Live' : 'None'}</span>
+            <div className="flex items-center justify-between gap-1">
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full shrink-0 ${active ? 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]' : 'bg-black/15'}`} />
+                <span className="text-[10px] uppercase font-bold tracking-widest opacity-60">{active ? 'Live' : 'None'}</span>
+              </div>
+              {active && onClear && (
+                <button onClick={onClear} className="text-[10px] opacity-30 hover:opacity-70 font-bold ml-auto" title="Clear">×</button>
+              )}
             </div>
             <p className="text-xs font-medium leading-tight">{label}</p>
             {active && count && <p className="text-[10px] opacity-50 font-mono">{count}</p>}
@@ -2789,11 +3095,15 @@ function DataView({
       <div>
         <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold mb-4">External Sources</p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {EXT_SOURCES.map(src => {
-            const loaded = dataStatus.find(d => d.key === src.type)?.active;
+          {EXT_SOURCES.map((src, idx) => {
+            const statusEntry = dataStatus.find(d => d.key === src.type);
+            const loaded = statusEntry?.active;
+            const count  = statusEntry?.count;
             const ts = dataTimestamps[src.type];
+            const canAddMore = (src.type === 'stats' || src.type === 'projections') && loaded;
+            const clearFn = statusEntry?.onClear;
             return (
-              <div key={src.type} className={`bg-white rounded-2xl border p-5 flex gap-4 ${loaded ? 'border-green-200' : 'border-black/5'}`}>
+              <div key={`${src.type}-${idx}`} className={`bg-white rounded-2xl border p-5 flex gap-4 ${loaded ? 'border-green-200' : 'border-black/5'}`}>
                 <span className="text-2xl shrink-0">{src.icon}</span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-2">
@@ -2802,7 +3112,7 @@ function DataView({
                       {src.label}
                       <ExternalLink size={11} className="opacity-40 group-hover:opacity-80 transition-opacity" />
                     </a>
-                    {loaded && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold shrink-0">✓ Loaded</span>}
+                    {loaded && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold shrink-0">✓ {count ?? 'Loaded'}</span>}
                   </div>
                   <ol className="flex flex-col gap-1 mb-3">
                     {src.steps.map((step, i) => (
@@ -2810,12 +3120,22 @@ function DataView({
                     ))}
                   </ol>
                   {loaded && ts && <p className="text-[10px] opacity-40 font-mono mb-2">{formatTs(ts)}</p>}
-                  <button
-                    onClick={() => openForcedUpload(src.type, true)}
-                    className={`text-[10px] font-bold px-3 py-1.5 rounded-lg uppercase tracking-widest transition-colors ${loaded ? 'bg-black/5 text-black/50 hover:bg-black/10' : 'bg-[#F27D26] text-white hover:bg-[#d96a1d]'}`}
-                  >
-                    {loaded ? 'Re-upload' : 'Upload CSV'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => openForcedUpload(src.type, !canAddMore)}
+                      className={`text-[10px] font-bold px-3 py-1.5 rounded-lg uppercase tracking-widest transition-colors ${loaded && !canAddMore ? 'bg-black/5 text-black/50 hover:bg-black/10' : 'bg-[#F27D26] text-white hover:bg-[#d96a1d]'}`}
+                    >
+                      {canAddMore ? 'Add More' : loaded ? 'Re-upload' : 'Upload CSV'}
+                    </button>
+                    {canAddMore && clearFn && (
+                      <button
+                        onClick={() => { clearFn(); openForcedUpload(src.type, false); }}
+                        className="text-[10px] font-bold px-3 py-1.5 rounded-lg uppercase tracking-widest bg-red-50 text-red-400 hover:bg-red-100 transition-colors"
+                      >
+                        Replace
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             );

@@ -1,8 +1,8 @@
 import Papa from 'papaparse';
-import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry, TransactionType } from '../types';
+import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry, TransactionType, PlayerStat, PlayerProjection } from '../types';
 import { TEAM_ABBREV } from '../constants';
 
-export type DataType = 'roster' | 'standings' | 'faab' | 'transactions' | 'statcast' | 'stuff' | 'leagueroster' | 'freeagents' | 'unknown';
+export type DataType = 'roster' | 'standings' | 'faab' | 'transactions' | 'statcast' | 'stuff' | 'leagueroster' | 'freeagents' | 'stats' | 'projections' | 'unknown';
 
 /**
  * Detects the data type by inspecting CSV column headers — filename-independent.
@@ -58,6 +58,20 @@ export function detectDataType(csvText: string): { type: DataType; rowCount: num
   // Standings
   if ((headers.includes('year') || headers.some(h => ['rank', 'place', 'pos'].includes(h))) && headers.some(h => ['points', 'pts', 'total'].includes(h))) {
     return { type: 'standings', rowCount, confidence: 'high' };
+  }
+
+  // FanGraphs Steamer / ZiPS projections: has playerid + projected counting stats
+  // FanGraphs batting projections: playerid + woba/fip present
+  if (headers.includes('playerid') && headers.some(h => ['woba', 'fip', 'xfip', 'wrc+'].includes(h))) {
+    return { type: 'projections', rowCount, confidence: 'high' };
+  }
+
+  // CBS YTD stats export (batting): has AVG, OBP, SLG, HR but no playerid, no Stuff+
+  // CBS YTD stats export (pitching): has ERA, WHIP, IP, K but no playerid, no Stuff+
+  const isCBSBatting  = headers.some(h => ['avg','obp','slg'].includes(h)) && headers.some(h => ['hr','rbi'].includes(h)) && !headers.includes('playerid') && !headers.includes('era');
+  const isCBSPitching = headers.some(h => ['era','whip','ip'].includes(h)) && !headers.includes('playerid') && !headers.some(h => ['stuff+','pitching+'].includes(h));
+  if (isCBSBatting || isCBSPitching) {
+    return { type: 'stats', rowCount, confidence: 'high' };
   }
 
   // Low-confidence guesses from generic stat columns
@@ -595,4 +609,117 @@ export function parseFreeAgents(csvText: string): LeaguePlayer[] {
   }
 
   return result;
+}
+
+/**
+ * Parses a CBS YTD stats export (batting or pitching) into PlayerStat[].
+ *
+ * CBS batting columns (typical): Player, Pos, Team, G, AB, R, H, 2B, 3B, HR, RBI, SB, CS, BB, SO, AVG, OBP, SLG
+ * CBS pitching columns (typical): Player, Pos, Team, G, GS, IP, H, BB, SO, W, L, SV, HLD, ERA, WHIP, QS
+ *
+ * The parser detects whether a row is a pitcher by the presence of ERA/IP values.
+ * Handles both batting and pitching rows so a merged upload works fine too.
+ */
+export function parseCBSStats(rawData: any[]): PlayerStat[] {
+  const results: PlayerStat[] = [];
+
+  for (const row of rawData) {
+    const name =
+      String(row.Player || row.player || row.Name || row.name || row['Player Name'] || '').trim();
+    if (!name || name.length < 2) continue;
+
+    const team  = String(row.Team || row.team || row.Tm || '').trim();
+    const pos   = String(row.Pos  || row.pos  || row.Position || '').trim();
+    const games = Number(row.G || row.Games || row.games || 0);
+
+    // Detect pitcher by presence of IP / ERA column values
+    const hasIP  = row.IP  !== undefined && row.IP  !== null && row.IP  !== '';
+    const hasERA = row.ERA !== undefined && row.ERA !== null && row.ERA !== '';
+    const isPitcher = hasIP || hasERA ||
+      pos.toUpperCase().includes('SP') || pos.toUpperCase() === 'RP' || pos.toUpperCase() === 'P';
+
+    const entry: PlayerStat = { name, team, pos, games, isPitcher };
+
+    if (isPitcher) {
+      entry.ip            = Number(row.IP   || row.ip   || 0) || undefined;
+      entry.era           = Number(row.ERA  || row.era  || 0) || undefined;
+      entry.whip          = Number(row.WHIP || row.whip || 0) || undefined;
+      entry.wins          = Number(row.W    || row.Wins || row.wins   || 0) || undefined;
+      entry.losses        = Number(row.L    || row.Losses || row.losses || 0) || undefined;
+      entry.saves         = Number(row.SV   || row.Saves || row.saves  || 0) || undefined;
+      entry.holds         = Number(row.HLD  || row.Holds || row.holds  || row.HD || 0) || undefined;
+      entry.strikeoutsP   = Number(row.SO   || row.K    || row.Strikeouts || 0) || undefined;
+      entry.qualityStarts = Number(row.QS   || row.qs   || 0) || undefined;
+      entry.gs            = Number(row.GS   || row.gs   || 0) || undefined;
+    } else {
+      entry.ab          = Number(row.AB  || row.ab  || 0) || undefined;
+      entry.avg         = Number(row.AVG || row.avg || 0) || undefined;
+      entry.obp         = Number(row.OBP || row.obp || 0) || undefined;
+      entry.slg         = Number(row.SLG || row.slg || 0) || undefined;
+      entry.hr          = Number(row.HR  || row.hr  || 0) || undefined;
+      entry.r           = Number(row.R   || row.r   || row.Runs || 0) || undefined;
+      entry.rbi         = Number(row.RBI || row.rbi || 0) || undefined;
+      entry.sb          = Number(row.SB  || row.sb  || 0) || undefined;
+      entry.bb          = Number(row.BB  || row.bb  || row.Walks || 0) || undefined;
+      entry.strikeoutsB = Number(row.SO  || row.K   || row.Strikeouts || 0) || undefined;
+    }
+
+    results.push(entry);
+  }
+
+  return results;
+}
+
+/**
+ * Parses a FanGraphs Steamer (or ZiPS) RoS projections CSV into PlayerProjection[].
+ *
+ * FanGraphs batting columns: Name, Team, G, AB, PA, HR, R, RBI, SB, AVG, OBP, SLG, OPS, wOBA, playerid
+ * FanGraphs pitching columns: Name, Team, G, GS, IP, SO, W, SV, ERA, WHIP, FIP, xFIP, playerid
+ */
+export function parseSteamerProjections(rawData: any[]): PlayerProjection[] {
+  const results: PlayerProjection[] = [];
+
+  for (const row of rawData) {
+    const name =
+      String(row.Name || row.name || row.Player || row.player || row['Player Name'] || '').trim();
+    if (!name || name.length < 2) continue;
+
+    const team = String(row.Team || row.team || row.Tm || '').trim();
+
+    // Detect pitcher by IP / ERA / FIP presence
+    const hasIP  = row.IP  !== undefined && row.IP  !== null && row.IP  !== '';
+    const hasERA = row.ERA !== undefined && row.ERA !== null && row.ERA !== '';
+    const hasFIP = row.FIP !== undefined && row.FIP !== null && row.FIP !== '';
+    const isPitcher = hasIP || hasERA || hasFIP;
+
+    const entry: PlayerProjection = { name, team, isPitcher };
+
+    if (isPitcher) {
+      entry.projIp   = Number(row.IP   || row.ip   || 0) || undefined;
+      entry.projGs   = Number(row.GS   || row.gs   || 0) || undefined;
+      entry.projEra  = Number(row.ERA  || row.era  || 0) || undefined;
+      entry.projWhip = Number(row.WHIP || row.whip || 0) || undefined;
+      entry.projK    = Number(row.SO   || row.K    || 0) || undefined;
+      entry.projW    = Number(row.W    || row.Wins || row.wins || 0) || undefined;
+      entry.projSv   = Number(row.SV   || row.sv   || row.Saves || 0) || undefined;
+      entry.projFip  = Number(row.FIP  || row.fip  || 0) || undefined;
+      entry.projXfip = Number(row.xFIP || row.xfip || 0) || undefined;
+    } else {
+      entry.projG    = Number(row.G    || row.g    || 0) || undefined;
+      entry.projAb   = Number(row.AB   || row.ab   || 0) || undefined;
+      entry.projHr   = Number(row.HR   || row.hr   || 0) || undefined;
+      entry.projR    = Number(row.R    || row.r    || row.Runs || 0) || undefined;
+      entry.projRbi  = Number(row.RBI  || row.rbi  || 0) || undefined;
+      entry.projSb   = Number(row.SB   || row.sb   || 0) || undefined;
+      entry.projAvg  = Number(row.AVG  || row.avg  || 0) || undefined;
+      entry.projObp  = Number(row.OBP  || row.obp  || 0) || undefined;
+      entry.projSlg  = Number(row.SLG  || row.slg  || 0) || undefined;
+      entry.projOps  = Number(row.OPS  || row.ops  || 0) || undefined;
+      entry.projWoba = Number(row.wOBA || row.woba || 0) || undefined;
+    }
+
+    results.push(entry);
+  }
+
+  return results;
 }
