@@ -1,8 +1,8 @@
 import Papa from 'papaparse';
-import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry, TransactionType, PlayerStat, PlayerProjection } from '../types';
+import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry, TransactionType, PlayerStat, PlayerProjection, FGBatterSeason, FGPitcherSeason } from '../types';
 import { TEAM_ABBREV } from '../constants';
 
-export type DataType = 'roster' | 'standings' | 'faab' | 'transactions' | 'statcast' | 'stuff' | 'leagueroster' | 'freeagents' | 'stats' | 'projections' | 'unknown';
+export type DataType = 'roster' | 'standings' | 'faab' | 'transactions' | 'statcast' | 'stuff' | 'leagueroster' | 'freeagents' | 'stats' | 'projections' | 'fg-bat' | 'fg-pit' | 'unknown';
 
 /**
  * Detects the data type by inspecting CSV column headers — filename-independent.
@@ -26,6 +26,18 @@ export function detectDataType(csvText: string): { type: DataType; rowCount: num
 
   const headers = lines[0].split(/,|\t/).map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
   const rowCount = lines.length - 1;
+
+  // FanGraphs Pitching Advanced (ERA-, FIP-, xFIP-, SIERA, K%, BB%, K-BB%) — detect BEFORE stuff
+  // SIERA is the definitive column that separates this from Stuff+ leaderboard
+  if (headers.includes('siera') || (headers.includes('k-bb%') && headers.some(h => ['era-','fip-','xfip-'].includes(h)))) {
+    return { type: 'fg-pit', rowCount, confidence: 'high' };
+  }
+
+  // FanGraphs Batting Dashboard (wRC+, xwOBA, wOBA, BB%, K%) — detect BEFORE CBS batting
+  // wRC+ with xwOBA is the definitive FG batting fingerprint
+  if (headers.includes('wrc+') || (headers.includes('xwoba') && headers.includes('woba'))) {
+    return { type: 'fg-bat', rowCount, confidence: 'high' };
+  }
 
   // FanGraphs Stuff+ / Pitching+ — very specific column names
   if (headers.some(h => ['stuff+', 'k/9+', 'k%+', 'era-', 'fip-', 'xfip-', 'pitching+', 'location+', 'bb/9+'].includes(h))) {
@@ -722,4 +734,94 @@ export function parseSteamerProjections(rawData: any[]): PlayerProjection[] {
   }
 
   return results;
+}
+
+/**
+ * Parses a FanGraphs Batting Dashboard CSV into FGBatterSeason[].
+ *
+ * Expected columns: #, Name, Team, G, PA, HR, R, RBI, SB, BB%, K%, ISO, BABIP,
+ *                   AVG, OBP, SLG, wOBA, xwOBA, wRC+, BsR, Off, Def, WAR
+ *
+ * BB% and K% are stored as "18.30%" strings — converted to decimals.
+ * season is parsed from the filename at upload time and passed in.
+ */
+export function parseFGBatting(rawData: any[], season: number): FGBatterSeason[] {
+  const parsePct = (v: any): number => {
+    if (v === null || v === undefined || v === '') return 0;
+    const s = String(v).trim().replace('%', '');
+    return parseFloat(s) / 100 || 0;
+  };
+
+  return rawData
+    .filter(row => {
+      const name = String(row.Name || row.name || '').trim();
+      return name.length >= 2 && !name.startsWith(',');
+    })
+    .map(row => ({
+      name:    String(row.Name || row.name || '').trim(),
+      team:    String(row.Team || row.team || row.Tm || '').trim(),
+      season,
+      g:       Number(row.G   || 0),
+      pa:      Number(row.PA  || 0),
+      hr:      Number(row.HR  || 0),
+      r:       Number(row.R   || 0),
+      rbi:     Number(row.RBI || 0),
+      sb:      Number(row.SB  || 0),
+      bbPct:   parsePct(row['BB%'] || row.BBpct || row['BB Pct']),
+      kPct:    parsePct(row['K%']  || row.Kpct  || row['K Pct']),
+      iso:     Number(row.ISO   || 0),
+      babip:   Number(row.BABIP || 0),
+      avg:     Number(row.AVG   || 0),
+      obp:     Number(row.OBP   || 0),
+      slg:     Number(row.SLG   || 0),
+      woba:    Number(row.wOBA  || row.woba  || 0),
+      xwoba:   Number(row.xwOBA || row.xwoba || 0),
+      wrcPlus: Number(row['wRC+'] || row.wrcplus || 0),
+      war:     Number(row.WAR  || 0),
+    }))
+    .filter(p => p.name.length >= 2);
+}
+
+/**
+ * Parses a FanGraphs Pitching Advanced CSV into FGPitcherSeason[].
+ *
+ * Expected columns: #, Name, Team, K/9, BB/9, K/BB, HR/9, K%, BB%, K-BB%,
+ *                   AVG, WHIP, BABIP, LOB%, ERA-, FIP-, xFIP-, ERA, FIP, E-F, xFIP, SIERA
+ *
+ * Note: FanGraphs inserts a junk description row at line 2 with all-empty Name cells.
+ * K%, BB%, K-BB%, LOB% stored as "16.80%" — converted to decimals.
+ * season is parsed from the filename at upload time and passed in.
+ */
+export function parseFGPitching(rawData: any[], season: number): FGPitcherSeason[] {
+  const parsePct = (v: any): number => {
+    if (v === null || v === undefined || v === '') return 0;
+    const s = String(v).trim().replace('%', '');
+    return parseFloat(s) / 100 || 0;
+  };
+
+  return rawData
+    .filter(row => {
+      // Filter the junk description row (Name is empty/null) and other bad rows
+      const name = String(row.Name || row.name || '').trim();
+      return name.length >= 2 && !name.startsWith(',');
+    })
+    .map(row => ({
+      name:         String(row.Name || row.name || '').trim(),
+      team:         String(row.Team || row.team || row.Tm || '').trim(),
+      season,
+      kPct:         parsePct(row['K%']    || row.Kpct),
+      bbPct:        parsePct(row['BB%']   || row.BBpct),
+      kMinusBBPct:  parsePct(row['K-BB%'] || row['K-BB Pct']),
+      era:          Number(row.ERA   || 0),
+      fip:          Number(row.FIP   || 0),
+      xfip:         Number(row.xFIP  || 0),
+      siera:        Number(row.SIERA || 0),
+      eraMinus:     Number(row['ERA-']  || 0),
+      fipMinus:     Number(row['FIP-']  || 0),
+      xfipMinus:    Number(row['xFIP-'] || 0),
+      whip:         Number(row.WHIP  || 0),
+      babip:        Number(row.BABIP || 0),
+      lobPct:       parsePct(row['LOB%'] || row.LOBpct),
+    }))
+    .filter(p => p.name.length >= 2);
 }

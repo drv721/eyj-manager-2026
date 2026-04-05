@@ -33,7 +33,7 @@ import {
   ABBREV_TO_FULLNAME,
   MINOR_LEAGUE_PICKS,
 } from './constants';
-import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry, TradeLogEntry, FaabBidEntry, PlayerStat, PlayerProjection } from './types';
+import { Player, HistoricalStanding, FaabEntry, LeagueDetails, LiveCategoryStanding, LeaguePlayer, TransactionEntry, TradeLogEntry, FaabBidEntry, PlayerStat, PlayerProjection, FGBatterSeason, FGPitcherSeason, SparkScore, FadeScore } from './types';
 
 import {
   mapRosterData,
@@ -49,10 +49,17 @@ import {
   parseFreeAgents,
   parseCBSStats,
   parseSteamerProjections,
+  parseFGBatting,
+  parseFGPitching,
   detectDataType,
   parseCSVText,
   DataType
 } from './services/dataService';
+
+import {
+  computeSparkScore,
+  computeFadeScore,
+} from './services/sparkFadeService';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'manage' | 'trades' | 'data' | 'strategy'>(() => {
@@ -79,9 +86,12 @@ export default function App() {
   const [faabBidLog, setFaabBidLog] = useState<FaabBidEntry[]>([]);
   const [parsedStats, setParsedStats] = useState<PlayerStat[] | null>(null);
   const [parsedProjections, setParsedProjections] = useState<PlayerProjection[] | null>(null);
+  const [parsedFGBat, setParsedFGBat] = useState<FGBatterSeason[]>([]);
+  const [parsedFGPit, setParsedFGPit] = useState<FGPitcherSeason[]>([]);
 
   // Central handler: apply parsed data by type. Used by both auto-load and manual import.
-  const applyParsedData = (type: DataType, rawData: any[], csvText: string) => {
+  // season is required for fg-bat / fg-pit (parsed from filename); ignored for all other types.
+  const applyParsedData = (type: DataType, rawData: any[], csvText: string, season?: number) => {
     if (type === 'roster') {
       setParsedRoster(mapRosterData(rawData));
       const { rules, salaryCap, faabBudget: parsedFaabBudget } = extractRosterRulesFromRoster(csvText);
@@ -141,6 +151,23 @@ export default function App() {
         const existingKeys = new Set(prev.map(key));
         return [...prev, ...incoming.filter(p => !existingKeys.has(key(p)))];
       });
+    } else if (type === 'fg-bat') {
+      const yr = season ?? new Date().getFullYear();
+      const incoming = parseFGBatting(rawData, yr);
+      // Merge by {name, season} key — safe to upload multiple years
+      setParsedFGBat(prev => {
+        const key = (r: FGBatterSeason) => `${r.name.toLowerCase()}|${r.season}`;
+        const existingKeys = new Set(prev.map(key));
+        return [...prev, ...incoming.filter(r => !existingKeys.has(key(r)))];
+      });
+    } else if (type === 'fg-pit') {
+      const yr = season ?? new Date().getFullYear();
+      const incoming = parseFGPitching(rawData, yr);
+      setParsedFGPit(prev => {
+        const key = (r: FGPitcherSeason) => `${r.name.toLowerCase()}|${r.season}`;
+        const existingKeys = new Set(prev.map(key));
+        return [...prev, ...incoming.filter(r => !existingKeys.has(key(r)))];
+      });
     }
     if (type !== 'unknown') {
       setDataTimestamps(prev => ({ ...prev, [type]: new Date().toISOString() }));
@@ -182,6 +209,10 @@ export default function App() {
       if (stats) setParsedStats(JSON.parse(stats));
       const projs = localStorage.getItem('eyj_projections');
       if (projs) setParsedProjections(JSON.parse(projs));
+      const fgb = localStorage.getItem('eyj_fgbat');
+      if (fgb) setParsedFGBat(JSON.parse(fgb));
+      const fgp = localStorage.getItem('eyj_fgpit');
+      if (fgp) setParsedFGPit(JSON.parse(fgp));
     } catch (err) {
       console.error('Failed to restore from localStorage', err);
     }
@@ -205,13 +236,17 @@ export default function App() {
   useEffect(() => { localStorage.setItem('eyj_faabbidlog', JSON.stringify(faabBidLog)); }, [faabBidLog]);
   useEffect(() => { if (parsedStats) localStorage.setItem('eyj_stats', JSON.stringify(parsedStats)); }, [parsedStats]);
   useEffect(() => { if (parsedProjections) localStorage.setItem('eyj_projections', JSON.stringify(parsedProjections)); }, [parsedProjections]);
+  useEffect(() => { if (parsedFGBat.length > 0) localStorage.setItem('eyj_fgbat', JSON.stringify(parsedFGBat)); }, [parsedFGBat]);
+  useEffect(() => { if (parsedFGPit.length > 0) localStorage.setItem('eyj_fgpit', JSON.stringify(parsedFGPit)); }, [parsedFGPit]);
 
   const handleResetData = () => {
-    ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings','eyj_leagueroster','eyj_transactions','eyj_freeagents','eyj_timestamps','eyj_tradelog','eyj_faabbidlog','eyj_stats','eyj_projections'].forEach(k => localStorage.removeItem(k));
+    ['eyj_roster','eyj_standings','eyj_faab','eyj_statcast','eyj_stuff','eyj_leagueDetails','eyj_categoryStandings','eyj_leagueroster','eyj_transactions','eyj_freeagents','eyj_timestamps','eyj_tradelog','eyj_faabbidlog','eyj_stats','eyj_projections','eyj_fgbat','eyj_fgpit'].forEach(k => localStorage.removeItem(k));
     setTradeLog([]);
     setFaabBidLog([]);
     setParsedStats(null);
     setParsedProjections(null);
+    setParsedFGBat([]);
+    setParsedFGPit([]);
     setParsedRoster(null);
     setParsedStandings(null);
     setParsedFaab(null);
@@ -300,6 +335,8 @@ export default function App() {
               parsedStuff={parsedStuff}
               parsedStats={parsedStats}
               parsedProjections={parsedProjections}
+              parsedFGBat={parsedFGBat}
+              parsedFGPit={parsedFGPit}
               roster={(parsedRoster && parsedRoster.length > 0) ? parsedRoster : INITIAL_ROSTER}
             />
           )}
@@ -324,6 +361,8 @@ export default function App() {
               parsedProjections={parsedProjections}
               parsedStatcast={parsedStatcast}
               parsedStuff={parsedStuff}
+              parsedFGBat={parsedFGBat}
+              parsedFGPit={parsedFGPit}
             />
           )}
           {activeTab === 'trades' && (
@@ -346,6 +385,8 @@ export default function App() {
               parsedStuff={parsedStuff}
               parsedStats={parsedStats}
               parsedProjections={parsedProjections}
+              parsedFGBat={parsedFGBat}
+              parsedFGPit={parsedFGPit}
               freeAgents={freeAgents}
               categoryStandings={parsedCategoryStandings}
               transactions={transactions}
@@ -360,6 +401,8 @@ export default function App() {
               onClearFreeAgents={() => { setFreeAgents([]); localStorage.removeItem('eyj_freeagents'); }}
               onClearStats={() => { setParsedStats(null); localStorage.removeItem('eyj_stats'); }}
               onClearProjections={() => { setParsedProjections(null); localStorage.removeItem('eyj_projections'); }}
+              onClearFGBat={() => { setParsedFGBat([]); localStorage.removeItem('eyj_fgbat'); }}
+              onClearFGPit={() => { setParsedFGPit([]); localStorage.removeItem('eyj_fgpit'); }}
               dataTimestamps={dataTimestamps}
               parsedRoster={parsedRoster}
               parsedStandings={parsedStandings}
@@ -368,6 +411,8 @@ export default function App() {
               parsedStuff={parsedStuff}
               parsedStats={parsedStats}
               parsedProjections={parsedProjections}
+              parsedFGBat={parsedFGBat}
+              parsedFGPit={parsedFGPit}
               leagueRoster={leagueRoster}
               freeAgents={freeAgents}
               transactions={transactions}
@@ -393,7 +438,7 @@ function NavItem({ active, onClick, icon, label }: { active: boolean, onClick: (
   );
 }
 
-function DashboardView({ standings, leagueDetails, transactions, tradeLog, parsedStatcast, parsedStuff, parsedStats, parsedProjections, roster }: {
+function DashboardView({ standings, leagueDetails, transactions, tradeLog, parsedStatcast, parsedStuff, parsedStats, parsedProjections, parsedFGBat, parsedFGPit, roster }: {
   standings: HistoricalStanding[];
   leagueDetails: LeagueDetails | null;
   transactions: TransactionEntry[] | null;
@@ -402,6 +447,8 @@ function DashboardView({ standings, leagueDetails, transactions, tradeLog, parse
   parsedStuff: any[] | null;
   parsedStats: PlayerStat[] | null;
   parsedProjections: PlayerProjection[] | null;
+  parsedFGBat: FGBatterSeason[];
+  parsedFGPit: FGPitcherSeason[];
   roster: Player[];
   key?: any;
 }) {
@@ -655,6 +702,8 @@ function getPlayerSignal(
   parsedStatcast: any[] | null,
   parsedStats: PlayerStat[] | null,
   parsedProjections: PlayerProjection[] | null,
+  parsedFGBat: FGBatterSeason[] = [],
+  parsedFGPit: FGPitcherSeason[] = [],
 ): PlayerSignal | null {
   const nm = (a: string, b: string) => {
     const norm = (s: string) => s.toLowerCase().replace(/[^a-z ]/g, '').trim();
@@ -692,6 +741,14 @@ function getPlayerSignal(
       const dir: PlayerSignal['dir'] = stat.era < 3.50 ? 'up' : stat.era > 5.00 ? 'warn' : 'neutral';
       return { label: `ERA ${stat.era.toFixed(2)}`, stat: `${Math.floor(stat.ip)} IP`, dir };
     }
+    // Fallback: SPARK score from FG Pitching Advanced
+    if (parsedFGPit.length > 0) {
+      const spark = computeSparkScore(player.name, true, parsedFGBat, parsedFGPit, parsedStuff ?? []);
+      if (spark) {
+        const dir: PlayerSignal['dir'] = spark.score >= 70 ? 'up' : spark.score >= 45 ? 'neutral' : 'warn';
+        return { label: `${spark.tier} · SPARK ${spark.score}`, stat: spark.topReason, dir };
+      }
+    }
   } else {
     const sc   = parsedStatcast?.find(d => nm(d.name, player.name));
     const stat = parsedStats?.find(d => nm(d.name, player.name) && !d.isPitcher);
@@ -717,6 +774,14 @@ function getPlayerSignal(
       const dir: PlayerSignal['dir'] = stat.avg >= 0.280 ? 'up' : stat.avg < 0.220 ? 'warn' : 'neutral';
       return { label: `AVG ${stat.avg.toFixed(3)}`, stat: `${stat.ab} AB`, dir };
     }
+    // Fallback: SPARK score from FG Batting Dashboard
+    if (parsedFGBat.length > 0) {
+      const spark = computeSparkScore(player.name, false, parsedFGBat, parsedFGPit, parsedStuff ?? []);
+      if (spark) {
+        const dir: PlayerSignal['dir'] = spark.score >= 70 ? 'up' : spark.score >= 45 ? 'neutral' : 'warn';
+        return { label: `${spark.tier} · SPARK ${spark.score}`, stat: spark.topReason, dir };
+      }
+    }
   }
   return null;
 }
@@ -741,7 +806,7 @@ function ManageView({
   roster, leagueDetails, faabBudget, onBudgetChange,
   parsedFaab, transactions, categoryStandings, leagueRoster, freeAgents, dataTimestamps,
   faabBidLog, onSaveFaabBid, onUpdateFaabBid, onDeleteFaabBid,
-  parsedStats, parsedProjections, parsedStatcast, parsedStuff,
+  parsedStats, parsedProjections, parsedStatcast, parsedStuff, parsedFGBat, parsedFGPit,
 }: {
   roster: Player[];
   leagueDetails: LeagueDetails | null;
@@ -761,6 +826,8 @@ function ManageView({
   parsedProjections: PlayerProjection[] | null;
   parsedStatcast: any[] | null;
   parsedStuff: any[] | null;
+  parsedFGBat: FGBatterSeason[];
+  parsedFGPit: FGPitcherSeason[];
   key?: any;
 }) {
   const [section, setSection] = useState<'roster' | 'keepers' | 'adddrop' | 'minors'>('roster');
@@ -868,7 +935,7 @@ function ManageView({
                     <p className="text-[10px] opacity-40">{group.players.length} players · ${group.players.reduce((s,p)=>s+p.salary,0)} salary</p>
                   </div>
                   {group.players.map(p => {
-                    const sig = getPlayerSignal(p, parsedStuff, parsedStatcast, parsedStats, parsedProjections);
+                    const sig = getPlayerSignal(p, parsedStuff, parsedStatcast, parsedStats, parsedProjections, parsedFGBat, parsedFGPit);
                     return (
                       <button
                         key={p.id}
@@ -2157,9 +2224,10 @@ interface StagedFile {
   assignedType: DataType;
   rowCount: number;
   confidence: 'high' | 'low';
+  detectedSeason: number | null; // parsed from filename, e.g. "FG Batting Dashboard 2025.csv" → 2025
 }
 
-const DATA_TYPES: Exclude<DataType, 'unknown'>[] = ['leagueroster', 'freeagents', 'roster', 'standings', 'transactions', 'faab', 'statcast', 'stuff', 'stats', 'projections'];
+const DATA_TYPES: Exclude<DataType, 'unknown'>[] = ['leagueroster', 'freeagents', 'roster', 'standings', 'transactions', 'faab', 'statcast', 'stuff', 'stats', 'projections', 'fg-bat', 'fg-pit'];
 const TYPE_LABELS: Record<DataType, string> = {
   leagueroster: 'League Rosters (All Teams)',
   freeagents: 'Available Players (FA List)',
@@ -2168,20 +2236,26 @@ const TYPE_LABELS: Record<DataType, string> = {
   transactions: 'Transaction Log',
   faab: 'FAAB Bid Log',
   statcast: 'Statcast',
-  stuff: 'Stuff+',
+  stuff: 'Stuff+ / Pitching+',
   stats: 'CBS YTD Stats',
   projections: 'Steamer RoS Projections',
+  'fg-bat': 'FG Batting Dashboard',
+  'fg-pit': 'FG Pitching Advanced',
   unknown: '? Unknown',
 };
 
 function StrategyLabView({
-  parsedRoster, parsedStatcast, parsedStuff, parsedStats, parsedProjections, freeAgents, categoryStandings, transactions, faabBudget,
+  parsedRoster, parsedStatcast, parsedStuff, parsedStats, parsedProjections,
+  parsedFGBat, parsedFGPit,
+  freeAgents, categoryStandings, transactions, faabBudget,
 }: {
   parsedRoster: Player[] | null;
   parsedStatcast: any[] | null;
   parsedStuff: any[] | null;
   parsedStats: PlayerStat[] | null;
   parsedProjections: PlayerProjection[] | null;
+  parsedFGBat: FGBatterSeason[];
+  parsedFGPit: FGPitcherSeason[];
   freeAgents: LeaguePlayer[];
   categoryStandings: LiveCategoryStanding[] | null;
   transactions: TransactionEntry[] | null;
@@ -2495,6 +2569,79 @@ function StrategyLabView({
         </div>
       </div>
 
+      {/* ── SPARK / FADE Scores ── */}
+      {(parsedFGBat.length > 0 || parsedFGPit.length > 0) && (() => {
+        type SparkRow = { player: Player; spark: SparkScore | null; fade: FadeScore | null };
+        const rows: SparkRow[] = effectiveRoster
+          .filter(p => !p.isMinor)
+          .map(p => {
+            const isPitcher = p.pos.some(x => ['SP','RP','P'].includes(x));
+            const spark = computeSparkScore(p.name, isPitcher, parsedFGBat, parsedFGPit, parsedStuff ?? []);
+            const fade  = computeFadeScore(p.name, isPitcher, parsedFGBat, parsedFGPit, parsedStuff ?? []);
+            return { player: p, spark, fade };
+          })
+          .filter(r => r.spark || r.fade)
+          .sort((a, b) => (b.spark?.score ?? 0) - (a.spark?.score ?? 0));
+
+        if (rows.length === 0) return null;
+
+        const SPARK_TIER_CLS: Record<string, string> = {
+          Breakout:   'bg-green-100 text-green-800',
+          Building:   'bg-emerald-100 text-emerald-700',
+          Developing: 'bg-yellow-100 text-yellow-700',
+          Watch:      'bg-gray-100 text-gray-500',
+        };
+        const FADE_TIER_CLS: Record<string, string> = {
+          'Sell High': 'bg-red-100 text-red-700',
+          Monitor:     'bg-orange-100 text-orange-700',
+          Hold:        'bg-yellow-100 text-yellow-700',
+          Stable:      'bg-green-100 text-green-700',
+        };
+
+        return (
+          <>
+            <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold -mb-4">SPARK / FADE Scores</p>
+            <div className="bg-white rounded-2xl border border-black/5 shadow-sm overflow-hidden">
+              <div className="px-6 py-4 border-b border-black/5 flex justify-between items-center">
+                <h3 className="font-serif italic text-xl">SPARK / FADE</h3>
+                <span className="text-[10px] opacity-40 italic">FG Batting &amp; Pitching Advanced · multi-year</span>
+              </div>
+              <div className="grid grid-cols-[1.5fr_0.5fr_1.2fr_1fr_1fr_1.6fr] gap-2 px-6 py-2 bg-[#F8F8F8] border-b border-black/10 text-[10px] font-bold uppercase tracking-widest opacity-50">
+                <span>Player</span><span>Pos</span><span>SPARK</span><span>FADE</span><span>Trend</span><span>Top Signal</span>
+              </div>
+              {rows.map(({ player, spark, fade }) => {
+                const trendIcon = spark?.trend === 'improving' ? '↑' : spark?.trend === 'declining' ? '↓' : spark?.trend === 'stable' ? '→' : '?';
+                const trendCls  = spark?.trend === 'improving' ? 'text-green-600' : spark?.trend === 'declining' ? 'text-red-500' : 'opacity-40';
+                return (
+                  <div key={player.id} className="grid grid-cols-[1.5fr_0.5fr_1.2fr_1fr_1fr_1.6fr] gap-2 px-6 py-3 border-b border-black/5 last:border-0 items-center hover:bg-[#F8F8F8] transition-colors">
+                    <div>
+                      <p className="text-sm font-medium">{player.name}</p>
+                      <p className="text-[10px] opacity-40">{player.team}</p>
+                    </div>
+                    <span className="text-[10px] opacity-60">{player.pos.join('/')}</span>
+                    <div className="flex items-center gap-1.5">
+                      {spark ? (
+                        <>
+                          <span className="font-mono text-sm font-bold">{spark.score}</span>
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${SPARK_TIER_CLS[spark.tier]}`}>{spark.tier}</span>
+                        </>
+                      ) : <span className="text-[10px] opacity-30 italic">—</span>}
+                    </div>
+                    <div>
+                      {fade ? (
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${FADE_TIER_CLS[fade.tier]}`}>{fade.tier} {fade.score}</span>
+                      ) : <span className="text-[10px] opacity-30 italic">—</span>}
+                    </div>
+                    <span className={`text-sm font-bold ${trendCls}`}>{trendIcon} {spark?.trend ?? '—'}</span>
+                    <p className="text-[10px] opacity-60 truncate" title={spark?.topReason ?? fade?.topReason}>{spark?.topReason ?? fade?.topReason ?? '—'}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        );
+      })()}
+
       {/* Regression Watch */}
       <>
         <p className="text-[10px] uppercase tracking-widest opacity-40 font-bold -mb-4">Regression Watch</p>
@@ -2650,6 +2797,8 @@ function DataView({
   onClearFreeAgents,
   onClearStats,
   onClearProjections,
+  onClearFGBat,
+  onClearFGPit,
   dataTimestamps,
   parsedRoster,
   parsedStandings,
@@ -2658,15 +2807,19 @@ function DataView({
   parsedStuff,
   parsedStats,
   parsedProjections,
+  parsedFGBat,
+  parsedFGPit,
   leagueRoster,
   freeAgents,
   transactions,
 }: {
-  onDataLoaded: (type: DataType, rawData: any[], csvText: string) => void;
+  onDataLoaded: (type: DataType, rawData: any[], csvText: string, season?: number) => void;
   onResetData: () => void;
   onClearFreeAgents?: () => void;
   onClearStats?: () => void;
   onClearProjections?: () => void;
+  onClearFGBat?: () => void;
+  onClearFGPit?: () => void;
   dataTimestamps: Record<string, string>;
   parsedRoster: Player[] | null;
   parsedStandings: HistoricalStanding[] | null;
@@ -2675,6 +2828,8 @@ function DataView({
   parsedStuff: any[] | null;
   parsedStats: PlayerStat[] | null;
   parsedProjections: PlayerProjection[] | null;
+  parsedFGBat: FGBatterSeason[];
+  parsedFGPit: FGPitcherSeason[];
   leagueRoster: Record<string, LeaguePlayer[]> | null;
   freeAgents: LeaguePlayer[];
   transactions: TransactionEntry[] | null;
@@ -2697,6 +2852,9 @@ function DataView({
       if (!file.name.match(/\.(csv|txt)$/i)) continue;
       const csvText = await file.text();
       const { type, rowCount, confidence } = detectDataType(csvText);
+      // Parse year from filename: "FG Batting Dashboard 2025.csv" → 2025
+      const yearMatch = file.name.match(/20(2\d)/);
+      const detectedSeason = yearMatch ? parseInt(yearMatch[0]) : null;
       newStaged.push({
         id: `${Date.now()}-${i}`,
         name: file.name,
@@ -2706,6 +2864,7 @@ function DataView({
         assignedType: type === 'unknown' ? 'leagueroster' : type,
         rowCount,
         confidence,
+        detectedSeason,
       });
     }
     setStagedFiles(prev => [...prev, ...newStaged]);
@@ -2758,7 +2917,7 @@ function DataView({
     setLoadingIds(prev => new Set(prev).add(staged.id));
     try {
       const rawData = await parseCSVText(staged.csvText);
-      onDataLoaded(staged.assignedType, rawData, staged.csvText);
+      onDataLoaded(staged.assignedType, rawData, staged.csvText, staged.detectedSeason ?? undefined);
       setStagedFiles(prev => prev.filter(f => f.id !== staged.id));
     } catch (err) {
       console.error('Load failed', err);
@@ -2779,7 +2938,11 @@ function DataView({
     setPasteContent('');
   };
 
-  const hasAnyData = !!(parsedRoster || parsedStandings || parsedFaab || parsedStatcast || parsedStuff || parsedStats || parsedProjections || leagueRoster || freeAgents.length > 0 || transactions);
+  const hasAnyData = !!(parsedRoster || parsedStandings || parsedFaab || parsedStatcast || parsedStuff || parsedStats || parsedProjections || parsedFGBat.length > 0 || parsedFGPit.length > 0 || leagueRoster || freeAgents.length > 0 || transactions);
+
+  // Unique seasons loaded for FG data
+  const fgBatSeasons = [...new Set(parsedFGBat.map(r => r.season))].sort().join(', ');
+  const fgPitSeasons = [...new Set(parsedFGPit.map(r => r.season))].sort().join(', ');
 
   const dataStatus = [
     { key: 'leagueroster', label: 'League Rosters', active: !!leagueRoster, count: leagueRoster ? `${Object.keys(leagueRoster).length} teams` : null, onClear: undefined as (() => void) | undefined },
@@ -2789,7 +2952,9 @@ function DataView({
     { key: 'statcast',     label: 'Statcast',       active: !!parsedStatcast, count: parsedStatcast ? `${parsedStatcast.length} players` : null, onClear: undefined },
     { key: 'stuff',        label: 'Stuff+',         active: !!parsedStuff, count: parsedStuff ? `${parsedStuff.length} pitchers` : null, onClear: undefined },
     { key: 'stats',        label: 'CBS YTD Stats',  active: !!parsedStats, count: parsedStats ? `${parsedStats.length} players` : null, onClear: onClearStats },
-    { key: 'projections',  label: 'Steamer Projections', active: !!parsedProjections, count: parsedProjections ? `${parsedProjections.length} players` : null, onClear: onClearProjections },
+    { key: 'projections',  label: 'Steamer Proj.',  active: !!parsedProjections, count: parsedProjections ? `${parsedProjections.length} players` : null, onClear: onClearProjections },
+    { key: 'fg-bat',       label: 'FG Batting',     active: parsedFGBat.length > 0, count: parsedFGBat.length > 0 ? `${parsedFGBat.length} rows · ${fgBatSeasons}` : null, onClear: onClearFGBat },
+    { key: 'fg-pit',       label: 'FG Pitching',    active: parsedFGPit.length > 0, count: parsedFGPit.length > 0 ? `${parsedFGPit.length} rows · ${fgPitSeasons}` : null, onClear: onClearFGPit },
   ];
 
   const CBS_SOURCES = [
@@ -2921,6 +3086,30 @@ function DataView({
       ],
       icon: '📡',
     },
+    {
+      type: 'fg-bat' as DataType,
+      label: 'FG Batting Dashboard (SPARK engine)',
+      url: 'https://www.fangraphs.com/leaders/major-league?pos=all&stats=bat&lg=all&qual=50&type=8',
+      steps: [
+        '1. Click the link above → FanGraphs Batting Leaders, Dashboard preset',
+        '2. Set Year = 2026 (repeat for 2025, 2024 — each file powers YoY trend)',
+        '3. Set Min PA = 50, export CSV',
+        'Name each file with the year, e.g. "FG Batting Dashboard 2025.csv" — year auto-detected.',
+      ],
+      icon: '🔬',
+    },
+    {
+      type: 'fg-pit' as DataType,
+      label: 'FG Pitching Advanced (SPARK engine)',
+      url: 'https://www.fangraphs.com/leaders/major-league?pos=p&stats=pit&lg=all&qual=30&type=1',
+      steps: [
+        '1. Click the link above → FanGraphs Pitching Leaders, Advanced preset',
+        '2. Set Year = 2026 (repeat for 2025, 2024 — each file powers YoY trend)',
+        '3. Set Min IP = 30, export CSV',
+        'Name each file with the year, e.g. "FG Pitching Advanced 2025.csv" — year auto-detected.',
+      ],
+      icon: '🧬',
+    },
   ];
 
   const formatTs = (iso: string) => {
@@ -2951,7 +3140,7 @@ function DataView({
       </header>
 
       {/* Status summary */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-5 lg:grid-cols-10 gap-3">
         {dataStatus.map(({ key, label, active, count, onClear }) => (
           <div key={key} className={`p-4 rounded-xl border flex flex-col gap-2 ${active ? 'bg-green-50 border-green-200' : 'bg-white border-black/5'}`}>
             <div className="flex items-center justify-between gap-1">
@@ -3009,7 +3198,12 @@ function DataView({
             {stagedFiles.map(staged => (
               <div key={staged.id} className="bg-black/20 rounded-lg p-3 flex items-center gap-2">
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-bold truncate">{staged.name}</p>
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-xs font-bold truncate">{staged.name}</p>
+                    {staged.detectedSeason && (
+                      <span className="text-[10px] bg-white/20 px-1.5 py-0.5 rounded font-mono shrink-0">{staged.detectedSeason}</span>
+                    )}
+                  </div>
                   <p className="text-[10px] opacity-50">{staged.rowCount} rows · {staged.detectedType === staged.assignedType && staged.confidence !== 'low' ? 'auto-detected' : staged.confidence === 'low' ? '⚠ verify type' : 'type forced'}</p>
                 </div>
                 <select
@@ -3100,7 +3294,8 @@ function DataView({
             const loaded = statusEntry?.active;
             const count  = statusEntry?.count;
             const ts = dataTimestamps[src.type];
-            const canAddMore = (src.type === 'stats' || src.type === 'projections') && loaded;
+            // Types that support multi-upload (merge by key) — show "Add More" button when loaded
+            const canAddMore = (['stats', 'projections', 'fg-bat', 'fg-pit'] as DataType[]).includes(src.type) && loaded;
             const clearFn = statusEntry?.onClear;
             return (
               <div key={`${src.type}-${idx}`} className={`bg-white rounded-2xl border p-5 flex gap-4 ${loaded ? 'border-green-200' : 'border-black/5'}`}>
