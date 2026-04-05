@@ -78,10 +78,11 @@ export function detectDataType(csvText: string): { type: DataType; rowCount: num
     return { type: 'projections', rowCount, confidence: 'high' };
   }
 
-  // CBS YTD stats export (batting): has AVG, OBP, SLG, HR but no playerid, no Stuff+
-  // CBS YTD stats export (pitching): has ERA, WHIP, IP, K but no playerid, no Stuff+
-  const isCBSBatting  = headers.some(h => ['avg','obp','slg'].includes(h)) && headers.some(h => ['hr','rbi'].includes(h)) && !headers.includes('playerid') && !headers.includes('era');
-  const isCBSPitching = headers.some(h => ['era','whip','ip'].includes(h)) && !headers.includes('playerid') && !headers.some(h => ['stuff+','pitching+'].includes(h));
+  // CBS YTD stats export (batting or pitching) from within a CBS fantasy league.
+  // FG data (wRC+, SIERA, playerid+woba) is already caught above, so it's safe to
+  // drop the !playerid guard — CBS fantasy exports sometimes include a playerid column.
+  const isCBSBatting  = headers.some(h => ['avg','obp','slg'].includes(h)) && headers.some(h => ['hr','rbi'].includes(h)) && !headers.includes('era');
+  const isCBSPitching = headers.some(h => ['era','whip','ip'].includes(h)) && !headers.some(h => ['stuff+','pitching+','siera','k-bb%'].includes(h));
   if (isCBSBatting || isCBSPitching) {
     return { type: 'stats', rowCount, confidence: 'high' };
   }
