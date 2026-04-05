@@ -2883,10 +2883,12 @@ function DataView({
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (!file.name.match(/\.(csv|txt)$/i)) continue;
-      const csvText = await file.text();
+      const csvText = stripCBSTitleRow(await file.text());
+      const yearMatch = file.name.match(/20(2\d)/);
+      const detectedSeason = yearMatch ? parseInt(yearMatch[0]) : undefined;
       try {
         const rawData = await parseCSVText(csvText);
-        onDataLoaded(forceType, rawData, csvText);
+        onDataLoaded(forceType, rawData, csvText, detectedSeason);
       } catch (err) {
         console.error('Forced load failed', err);
       }
