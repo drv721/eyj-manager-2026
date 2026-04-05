@@ -627,39 +627,63 @@ export function parseFreeAgents(csvText: string): LeaguePlayer[] {
 /**
  * Parses a CBS YTD stats export (batting or pitching) into PlayerStat[].
  *
- * CBS batting columns (typical): Player, Pos, Team, G, AB, R, H, 2B, 3B, HR, RBI, SB, CS, BB, SO, AVG, OBP, SLG
- * CBS pitching columns (typical): Player, Pos, Team, G, GS, IP, H, BB, SO, W, L, SV, HLD, ERA, WHIP, QS
+ * CBS fantasy league export format (from within the league, not public CBS stats):
+ *   Line 1: Title row  "All Pitchers Year to Date MLB Standard Categories"  ← stripped before we get here
+ *   Line 2: Headers    Avail,Player,INNs,APP,GS,QS,CG,W,L,S,BS,HD,K,BB,H,ERA,WHIP,Rank,
+ *   Data:   team name (or "W (date)" for available), "Sandy Alcantara SP | MIA ", stats...
  *
- * The parser detects whether a row is a pitcher by the presence of ERA/IP values.
- * Handles both batting and pitching rows so a merged upload works fine too.
+ * Batting header: Avail,Player,AB,R,H,1B,2B,3B,HR,RBI,BB,K,SB,CS,AVG,OBP,SLG,Rank,
+ *
+ * CBS uses INNs (not IP), APP (not G), S (not SV), HD (not HLD), K (not SO).
+ * Player field contains "Name POS | MLBTEAM" — we strip position and team.
+ * Avail field is the fantasy team owner (ignored for PlayerStat purposes).
  */
 export function parseCBSStats(rawData: any[]): PlayerStat[] {
+  // Position abbreviations used by CBS to append to player names
+  const POS_STRIP = /\s+(?:SP|RP|C|1B|2B|3B|SS|MI|CI|OF|DH|P)(?:,(?:SP|RP|C|1B|2B|3B|SS|MI|CI|OF|DH|P))*$/;
+
   const results: PlayerStat[] = [];
 
   for (const row of rawData) {
-    const name =
-      String(row.Player || row.player || row.Name || row.name || row['Player Name'] || '').trim();
+    // CBS Player field: "Sandy Alcantara SP | MIA " — extract name, pos, mlbTeam
+    const rawPlayer = String(row.Player || row.player || row.Name || row.name || row['Player Name'] || '').trim();
+    if (!rawPlayer || rawPlayer.length < 2) continue;
+    // Skip rows that are still header-like (e.g. if title row wasn't stripped)
+    if (rawPlayer.toLowerCase().includes('year to date') || rawPlayer.toLowerCase() === 'player') continue;
+
+    const pipeIdx  = rawPlayer.indexOf(' | ');
+    const namePart = (pipeIdx >= 0 ? rawPlayer.slice(0, pipeIdx) : rawPlayer).trim();
+    const mlbTeam  = pipeIdx >= 0 ? rawPlayer.slice(pipeIdx + 3).trim()
+                   : String(row.Team || row.team || row.Tm || '').trim();
+
+    // Strip trailing position tag: "Sandy Alcantara SP" → "Sandy Alcantara"
+    const posMatch = namePart.match(POS_STRIP);
+    const name     = (posMatch ? namePart.slice(0, posMatch.index) : namePart).trim();
+    const posFromPlayer = posMatch ? posMatch[0].trim() : '';
+
     if (!name || name.length < 2) continue;
 
-    const team  = String(row.Team || row.team || row.Tm || '').trim();
-    const pos   = String(row.Pos  || row.pos  || row.Position || '').trim();
-    const games = Number(row.G || row.Games || row.games || 0);
+    const pos   = posFromPlayer || String(row.Pos || row.pos || row.Position || '').trim();
+    // CBS uses APP for appearances (pitching) or G for games (batting)
+    const games = Number(row.G || row.Games || row.games || row.APP || row.App || 0);
 
-    // Detect pitcher by presence of IP / ERA column values
-    const hasIP  = row.IP  !== undefined && row.IP  !== null && row.IP  !== '';
-    const hasERA = row.ERA !== undefined && row.ERA !== null && row.ERA !== '';
-    const isPitcher = hasIP || hasERA ||
+    // Detect pitcher: CBS pitching files have INNs or ERA; also check pos tag
+    const hasINNS = row.INNs !== undefined && row.INNs !== null && row.INNs !== '';
+    const hasIP   = row.IP   !== undefined && row.IP   !== null && row.IP   !== '';
+    const hasERA  = row.ERA  !== undefined && row.ERA  !== null && row.ERA  !== '';
+    const isPitcher = hasINNS || hasIP || hasERA ||
       pos.toUpperCase().includes('SP') || pos.toUpperCase() === 'RP' || pos.toUpperCase() === 'P';
 
-    const entry: PlayerStat = { name, team, pos, games, isPitcher };
+    const entry: PlayerStat = { name, team: mlbTeam, pos, games, isPitcher };
 
     if (isPitcher) {
-      entry.ip            = Number(row.IP   || row.ip   || 0) || undefined;
+      // CBS pitching: INNs = innings (not IP), S = saves (not SV), HD = holds (not HLD)
+      entry.ip            = Number(row.INNs || row.Inns || row.inns || row.IP || row.ip || 0) || undefined;
       entry.era           = Number(row.ERA  || row.era  || 0) || undefined;
       entry.whip          = Number(row.WHIP || row.whip || 0) || undefined;
       entry.wins          = Number(row.W    || row.Wins || row.wins   || 0) || undefined;
       entry.losses        = Number(row.L    || row.Losses || row.losses || 0) || undefined;
-      entry.saves         = Number(row.SV   || row.Saves || row.saves  || 0) || undefined;
+      entry.saves         = Number(row.SV   || row.Saves || row.saves  || row.S || 0) || undefined;
       entry.holds         = Number(row.HLD  || row.Holds || row.holds  || row.HD || 0) || undefined;
       entry.strikeoutsP   = Number(row.SO   || row.K    || row.Strikeouts || 0) || undefined;
       entry.qualityStarts = Number(row.QS   || row.qs   || 0) || undefined;

@@ -2845,12 +2845,17 @@ function DataView({
   const forcedFileInputRef = useRef<HTMLInputElement>(null);
   const forcedTypeRef = useRef<DataType | null>(null);
 
+  // Strip CBS fantasy export title rows like "All Pitchers Year to Date MLB Standard Categories"
+  // that appear as line 1 and confuse PapaParser into treating them as the header.
+  const stripCBSTitleRow = (text: string): string =>
+    text.replace(/^[^\n]*(?:Year to Date|All (?:Players|Pitchers|Batters))[^\n]*\n?/i, '');
+
   const stageFiles = async (files: FileList | File[]) => {
     const newStaged: StagedFile[] = [];
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (!file.name.match(/\.(csv|txt)$/i)) continue;
-      const csvText = await file.text();
+      const csvText = stripCBSTitleRow(await file.text());
       const { type, rowCount, confidence } = detectDataType(csvText);
       // Parse year from filename: "FG Batting Dashboard 2025.csv" → 2025
       const yearMatch = file.name.match(/20(2\d)/);
