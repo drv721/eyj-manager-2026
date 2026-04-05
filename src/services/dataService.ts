@@ -292,7 +292,9 @@ export function mapRosterData(rawData: any[]): Player[] {
     salary: Number(row.Salary || row.salary || row.Price || 0),
     notes: row.Notes || row.notes || '',
     isMinor: row.Minor === true || row.isMinor === true || row.Status === 'Minor',
-    isReserve: row.Reserve === true || row.isReserve === true || row.Status === 'Reserve'
+    isReserve: row.Reserve === true || row.isReserve === true || row.Status === 'Reserve',
+    isIL: row.IL === true || row.isIL === true ||
+      ['il', 'dl', 'injured', 'ir'].includes(String(row.Status || row.RosterStatus || row['Roster Status'] || '').toLowerCase()),
   }));
 }
 

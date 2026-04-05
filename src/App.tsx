@@ -836,10 +836,28 @@ function ManageView({
   const LUXURY_TAX = 400;
   const AUCTION_CAP = 260;
 
-  const activePlayers  = roster.filter(p => !p.isMinor && !p.isReserve);
+  // Build IL status lookup from leagueRoster['EYJ'] (section-based, most accurate)
+  // and fall back to the isIL flag parsed from the user's own roster CSV.
+  const eyjLeagueRoster = leagueRoster?.['EYJ'] ?? [];
+  const normName = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '');
+  const leagueILNames = new Set(
+    eyjLeagueRoster.filter(lp => lp.status === 'injured').map(lp => normName(lp.name))
+  );
+  const isIL = (p: Player) => !!p.isIL || leagueILNames.has(normName(p.name));
+
+  const activePlayers  = roster.filter(p => !p.isMinor && !p.isReserve && !isIL(p));
+  const ilPlayers      = roster.filter(p => !p.isMinor && !p.isReserve && isIL(p));
   const reservePlayers = roster.filter(p => p.isReserve && !p.isMinor);
   const minorPlayers   = roster.filter(p => p.isMinor);
   const activeSalary   = roster.filter(p => !p.isMinor).reduce((s, p) => s + p.salary, 0);
+
+  // Position coverage: find required positions missing from the active (non-IL) roster
+  const REQUIRED_POSITIONS = ['C', 'SS', 'SP'];
+  const uncoveredPositions = REQUIRED_POSITIONS.filter(req =>
+    !activePlayers.some(p => p.pos.includes(req))
+  );
+  // Which IL players are responsible for each uncovered slot?
+  const ilCovering = (req: string) => ilPlayers.filter(p => p.pos.includes(req)).map(p => p.name);
 
   // N-contract players are eligible to keep (as K1 next year) — included here
   const keeperEligible = roster.filter(p =>
@@ -891,10 +909,13 @@ function ManageView({
           },
           {
             label: 'Roster',
-            value: `${activePlayers.length + reservePlayers.length} active`,
+            value: `${activePlayers.length + reservePlayers.length} active${ilPlayers.length > 0 ? ` · ${ilPlayers.length} IL` : ''}`,
             sub: `${minorPlayers.length} in minors`,
-            alert: false,
-            alertMsg: '',
+            alert: uncoveredPositions.length > 0,
+            alertMsg: uncoveredPositions.map(pos => {
+              const covering = ilCovering(pos);
+              return covering.length > 0 ? `Need active ${pos} (${covering.join(', ')} on IL)` : `No active ${pos}`;
+            }).join(' · '),
           },
         ].map(card => (
           <div key={card.label} className={`p-4 rounded-2xl border ${card.alert ? 'bg-red-50 border-red-200' : 'bg-white border-black/5'} shadow-sm`}>
@@ -924,14 +945,15 @@ function ManageView({
           {/* Player list */}
           <div className="flex-1 flex flex-col gap-4">
             {[
-              { label: 'Active Batters', players: activePlayers.filter(p => !p.pos.some(pp => ['SP','RP','P'].includes(pp))) },
-              { label: 'Active Pitchers', players: activePlayers.filter(p => p.pos.some(pp => ['SP','RP','P'].includes(pp))) },
-              { label: 'Reserve', players: reservePlayers },
+              { label: 'Active Batters', players: activePlayers.filter(p => !p.pos.some(pp => ['SP','RP','P'].includes(pp))), ilGroup: false },
+              { label: 'Active Pitchers', players: activePlayers.filter(p => p.pos.some(pp => ['SP','RP','P'].includes(pp))), ilGroup: false },
+              { label: 'IL', players: ilPlayers, ilGroup: true },
+              { label: 'Reserve', players: reservePlayers, ilGroup: false },
             ].map(group => (
               group.players.length > 0 && (
-                <div key={group.label} className="bg-white rounded-2xl border border-black/5 overflow-hidden shadow-sm">
-                  <div className="px-5 py-3 border-b border-black/5 flex justify-between items-center">
-                    <p className="text-[10px] uppercase font-bold tracking-widest opacity-50">{group.label}</p>
+                <div key={group.label} className={`rounded-2xl border overflow-hidden shadow-sm ${group.ilGroup ? 'bg-red-50 border-red-200' : 'bg-white border-black/5'}`}>
+                  <div className={`px-5 py-3 border-b flex justify-between items-center ${group.ilGroup ? 'border-red-200' : 'border-black/5'}`}>
+                    <p className={`text-[10px] uppercase font-bold tracking-widest ${group.ilGroup ? 'text-red-500' : 'opacity-50'}`}>{group.label}</p>
                     <p className="text-[10px] opacity-40">{group.players.length} players · ${group.players.reduce((s,p)=>s+p.salary,0)} salary</p>
                   </div>
                   {group.players.map(p => {
@@ -940,10 +962,13 @@ function ManageView({
                       <button
                         key={p.id}
                         onClick={() => setSelectedPlayer(selectedPlayer?.id === p.id ? null : p)}
-                        className={`w-full flex items-center gap-3 px-5 py-3 border-b border-black/5 last:border-0 hover:bg-[#F8F8F8] transition-colors text-left ${selectedPlayer?.id === p.id ? 'bg-[#FFF4EC]' : ''}`}
+                        className={`w-full flex items-center gap-3 px-5 py-3 border-b last:border-0 hover:bg-black/5 transition-colors text-left ${group.ilGroup ? 'border-red-200' : 'border-black/5'} ${selectedPlayer?.id === p.id ? 'bg-[#FFF4EC]' : ''}`}
                       >
                         <span className="text-[10px] font-bold text-center bg-black/5 rounded px-1.5 py-0.5 w-14 shrink-0">{p.pos.join('/')}</span>
-                        <span className="flex-1 text-sm font-medium">{p.name}</span>
+                        <span className="flex-1 text-sm font-medium flex items-center gap-1.5">
+                          {p.name}
+                          {group.ilGroup && <span className="text-[9px] font-bold bg-red-500 text-white px-1.5 py-0.5 rounded uppercase tracking-wider">IL</span>}
+                        </span>
                         {sig && <SignalChip signal={sig} />}
                         <span className="text-[10px] opacity-40 shrink-0">{p.team}</span>
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${p.contract.startsWith('K') || p.contract.startsWith('F') ? 'bg-[#F27D26]/10 text-[#F27D26]' : p.contract.startsWith('M') ? 'bg-purple-100 text-purple-700' : 'bg-black/5 opacity-60'}`}>{p.contract}</span>

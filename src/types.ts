@@ -10,6 +10,7 @@ export interface Player {
   notes?: string;
   isMinor?: boolean;
   isReserve?: boolean;
+  isIL?: boolean;
 }
 
 export interface CategoryProjection {
