@@ -1073,6 +1073,12 @@ function ManageView({
           onSaveFaabBid={onSaveFaabBid}
           onUpdateFaabBid={onUpdateFaabBid}
           onDeleteFaabBid={onDeleteFaabBid}
+          uncoveredPositions={uncoveredPositions}
+          ilPlayers={ilPlayers}
+          parsedStatcast={parsedStatcast}
+          parsedStats={parsedStats}
+          parsedProjections={parsedProjections}
+          parsedFGBat={parsedFGBat}
         />
       )}
 
@@ -1322,6 +1328,7 @@ const BID_STATUS_COLORS: Record<FaabBidEntry['status'], string> = {
 function AddDropPanel({
   faabBudget, onBudgetChange, roster, freeAgents, leagueRoster, categoryStandings, transactions, dataTimestamps,
   faabBidLog, onSaveFaabBid, onUpdateFaabBid, onDeleteFaabBid,
+  uncoveredPositions, ilPlayers, parsedStatcast, parsedStats, parsedProjections, parsedFGBat,
 }: {
   faabBudget: number; onBudgetChange: (n: number) => void;
   roster: Player[]; freeAgents: LeaguePlayer[];
@@ -1333,6 +1340,12 @@ function AddDropPanel({
   onSaveFaabBid: (entry: FaabBidEntry) => void;
   onUpdateFaabBid: (id: string, patch: Partial<FaabBidEntry>) => void;
   onDeleteFaabBid: (id: string) => void;
+  uncoveredPositions: string[];
+  ilPlayers: Player[];
+  parsedStatcast: any[] | null;
+  parsedStats: PlayerStat[] | null;
+  parsedProjections: PlayerProjection[] | null;
+  parsedFGBat: FGBatterSeason[];
 }) {
   const [search, setSearch]         = useState('');
   const [selected, setSelected]     = useState<LeaguePlayer | null>(null);
@@ -1347,6 +1360,67 @@ function AddDropPanel({
   const available = freeAgents.length > 0 ? freeAgents : [];
   const hasFAList = freeAgents.length > 0;
   const hasTxns   = !!transactions && transactions.length > 0;
+
+  // Build full owned-player set so we don't suggest roster players as available
+  const nm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '');
+  const ownedByLeague = new Set(
+    Object.values(leagueRoster ?? {}).flat().map(lp => nm(lp.name))
+  );
+  const isAvailable = (name: string) => !ownedByLeague.has(nm(name));
+
+  // Score a free agent for roto value using best available data source (highest confidence first)
+  const scoreFABatter = (faName: string): { score: number; label: string; sub: string } => {
+    const fg   = parsedFGBat.find(r => nm(r.name) === nm(faName));
+    const sc   = parsedStatcast?.find((r: any) => nm(r.name) === nm(faName));
+    const proj = parsedProjections?.find(r => nm(r.name) === nm(faName) && !r.isPitcher);
+    const stat = parsedStats?.find(r => nm(r.name) === nm(faName) && !r.isPitcher);
+
+    if (fg?.wrcPlus) {
+      const sub = [
+        proj?.projHr   ? `proj ${proj.projHr} HR` : stat?.hr ? `${stat.hr} HR` : null,
+        proj?.projAvg  ? `proj .${Math.round((proj.projAvg||0)*1000)} AVG` : stat?.avg ? `.${Math.round((stat.avg||0)*1000)} AVG` : null,
+        sc?.xwoba      ? `xwOBA ${sc.xwoba.toFixed(3)}` : null,
+      ].filter(Boolean).slice(0, 3).join(' · ');
+      return { score: fg.wrcPlus, label: `wRC+ ${fg.wrcPlus}`, sub };
+    }
+    if (sc?.xwoba) {
+      const sub = [
+        proj?.projHr  ? `proj ${proj.projHr} HR` : stat?.hr ? `${stat.hr} HR` : null,
+        proj?.projAvg ? `proj .${Math.round((proj.projAvg||0)*1000)} AVG` : stat?.avg ? `.${Math.round((stat.avg||0)*1000)} AVG` : null,
+      ].filter(Boolean).join(' · ');
+      return { score: Math.round(sc.xwoba * 1000), label: `xwOBA ${sc.xwoba.toFixed(3)}`, sub };
+    }
+    if (proj?.projHr || proj?.projAvg) {
+      const score = (proj.projHr || 0) * 3 + Math.round((proj.projAvg || 0) * 100);
+      const sub = [
+        proj.projHr  ? `proj ${proj.projHr} HR` : null,
+        proj.projAvg ? `proj .${Math.round((proj.projAvg||0)*1000)} AVG` : null,
+        proj.projSb  ? `proj ${proj.projSb} SB` : null,
+      ].filter(Boolean).join(' · ');
+      return { score, label: `proj ${proj.projHr ?? '?'} HR`, sub };
+    }
+    if (stat?.hr || stat?.avg) {
+      const score = (stat.hr || 0) * 3 + Math.round((stat.avg || 0) * 100);
+      const sub = [
+        stat.hr  ? `${stat.hr} HR` : null,
+        stat.avg ? `.${Math.round((stat.avg||0)*1000)} AVG` : null,
+        stat.rbi ? `${stat.rbi} RBI` : null,
+      ].filter(Boolean).join(' · ');
+      return { score, label: stat.hr ? `${stat.hr} HR` : `.${Math.round((stat.avg||0)*1000)} AVG`, sub };
+    }
+    return { score: 0, label: 'No data', sub: 'Upload FG Batting, Statcast, or Projections for rankings' };
+  };
+
+  // Ranked available players for each uncovered position
+  const needsRankings = uncoveredPositions.map(pos => {
+    const candidates = available
+      .filter(fa => fa.pos.includes(pos) && isAvailable(fa.name))
+      .map(fa => ({ fa, ...scoreFABatter(fa.name) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6);
+    const ilResponsible = ilPlayers.filter(p => p.pos.includes(pos)).map(p => p.name);
+    return { pos, candidates, ilResponsible };
+  }).filter(n => n.candidates.length > 0);
 
   const filtered = search.length >= 2
     ? available.filter(p => p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 8)
@@ -1393,6 +1467,45 @@ function AddDropPanel({
 
   return (
     <div className="flex flex-col gap-6">
+
+      {/* ── Roster Needs: surfaces when a required position is uncovered (e.g. Kirk on IL) ── */}
+      {needsRankings.map(({ pos, candidates, ilResponsible }) => (
+        <div key={pos} className="bg-red-50 border border-red-200 rounded-2xl overflow-hidden shadow-sm">
+          <div className="px-6 py-4 border-b border-red-200 flex items-center gap-3">
+            <span className="text-red-500 text-lg">⚠</span>
+            <div>
+              <p className="font-bold text-red-700 text-sm">
+                No active {pos}{ilResponsible.length > 0 ? ` — ${ilResponsible.join(', ')} on IL` : ''}
+              </p>
+              <p className="text-[10px] text-red-500 mt-0.5">
+                Available {pos}s ranked by best available metric · click a player to load them in the bid calculator below
+              </p>
+            </div>
+          </div>
+          <div className="divide-y divide-red-100">
+            {candidates.map(({ fa, label, sub, score }, i) => (
+              <button
+                key={fa.name}
+                onClick={() => handleSelect(fa)}
+                className="w-full flex items-center gap-3 px-6 py-3 hover:bg-red-100/50 transition-colors text-left"
+              >
+                <span className="text-[11px] font-bold text-red-400 w-5 shrink-0">#{i + 1}</span>
+                <span className="text-[10px] font-bold bg-red-200/60 text-red-700 rounded px-1.5 py-0.5 shrink-0 w-8 text-center">{fa.pos.filter(p => !['SP','RP','P'].includes(p)).join('/')  || fa.pos.join('/')}</span>
+                <span className="flex-1 text-sm font-medium">{fa.name}</span>
+                <span className="text-[10px] opacity-40 shrink-0">{fa.mlbTeam}</span>
+                <div className="text-right shrink-0">
+                  <p className={`text-xs font-bold ${score > 0 ? 'text-[#F27D26]' : 'text-gray-400'}`}>{label}</p>
+                  {sub && <p className="text-[10px] opacity-50">{sub}</p>}
+                </div>
+              </button>
+            ))}
+            {candidates.length === 0 && (
+              <p className="px-6 py-4 text-sm opacity-50 italic">No available {pos}s found — upload the Free Agents list in the Data tab.</p>
+            )}
+          </div>
+        </div>
+      ))}
+
       <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-6">
         <h3 className="font-serif italic text-xl mb-4">FAAB Bid Calculator</h3>
 
