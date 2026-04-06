@@ -388,6 +388,7 @@ export default function App() {
               parsedFGBat={parsedFGBat}
               parsedFGPit={parsedFGPit}
               freeAgents={freeAgents}
+              leagueRoster={leagueRoster}
               categoryStandings={parsedCategoryStandings}
               transactions={transactions}
               faabBudget={faabBudget}
@@ -2272,7 +2273,7 @@ const TYPE_LABELS: Record<DataType, string> = {
 function StrategyLabView({
   parsedRoster, parsedStatcast, parsedStuff, parsedStats, parsedProjections,
   parsedFGBat, parsedFGPit,
-  freeAgents, categoryStandings, transactions, faabBudget,
+  freeAgents, leagueRoster, categoryStandings, transactions, faabBudget,
 }: {
   parsedRoster: Player[] | null;
   parsedStatcast: any[] | null;
@@ -2282,6 +2283,7 @@ function StrategyLabView({
   parsedFGBat: FGBatterSeason[];
   parsedFGPit: FGPitcherSeason[];
   freeAgents: LeaguePlayer[];
+  leagueRoster: Record<string, LeaguePlayer[]> | null;
   categoryStandings: LiveCategoryStanding[] | null;
   transactions: TransactionEntry[] | null;
   faabBudget: number;
@@ -2298,11 +2300,19 @@ function StrategyLabView({
   const rosterNames = new Set(effectiveRoster.map(p => p.name.toLowerCase().replace(/[^a-z]/g, '')));
   const isOnRoster = (name: string) => rosterNames.has(name.toLowerCase().replace(/[^a-z]/g, ''));
 
+  // Build the full set of owned players across all fantasy teams from leagueRoster.
+  // This is more reliable than freeAgents (which can be stale) — if a player appears
+  // on any team's leagueRoster they are definitely not available.
+  const ownedNames = new Set(
+    Object.values(leagueRoster ?? {}).flat().map(lp => lp.name.toLowerCase().replace(/[^a-z]/g, ''))
+  );
+  const isOwned = (name: string) => ownedNames.has(name.toLowerCase().replace(/[^a-z]/g, ''));
+
   // Batters: anchor on xwOBA > .350, enrich with CBS stats and Steamer projections
   const radarBatters = (() => {
     // Collect candidate names from Statcast (quality of contact signal)
     const statcastCandidates = (parsedStatcast || [])
-      .filter(d => (d.xwoba || 0) > 0.350 && !isOnRoster(d.name));
+      .filter(d => (d.xwoba || 0) > 0.350 && !isOnRoster(d.name) && !isOwned(d.name));
 
     return statcastCandidates.map(d => {
       const fa   = freeAgents.find(p => nameMatch(p.name, d.name));
@@ -2332,7 +2342,7 @@ function StrategyLabView({
   // Pitchers: anchor on Stuff+ > 108, enrich with CBS stats and Steamer projections
   const radarPitchers = (() => {
     const stuffCandidates = (parsedStuff || [])
-      .filter((d: any) => (d.stuffPlus || 0) > 108 && !isOnRoster(d.name));
+      .filter((d: any) => (d.stuffPlus || 0) > 108 && !isOnRoster(d.name) && !isOwned(d.name));
 
     return stuffCandidates.map((d: any) => {
       const fa   = freeAgents.find(p => nameMatch(p.name, d.name));
