@@ -983,7 +983,7 @@ function ManageView({
                       <button
                         key={p.id}
                         onClick={() => setSelectedPlayer(selectedPlayer?.id === p.id ? null : p)}
-                        className={`w-full flex items-center gap-3 px-5 py-3 border-b last:border-0 hover:bg-black/5 transition-colors text-left ${group.ilGroup ? 'border-red-200' : 'border-black/5'} ${selectedPlayer?.id === p.id ? 'bg-[#FFF4EC]' : ''}`}
+                        className={`group w-full flex items-center gap-3 px-5 py-3 border-b last:border-0 hover:bg-black/5 transition-colors text-left ${group.ilGroup ? 'border-red-200' : 'border-black/5'} ${selectedPlayer?.id === p.id ? 'bg-[#FFF4EC]' : ''}`}
                       >
                         <span className="text-[10px] font-bold text-center bg-black/5 rounded px-1.5 py-0.5 w-14 shrink-0">{p.pos.join('/')}</span>
                         <span className="flex-1 text-sm font-medium flex items-center gap-1.5">
@@ -994,11 +994,11 @@ function ManageView({
                         <span className="text-[10px] opacity-40 shrink-0">{p.team}</span>
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${p.contract.startsWith('K') || p.contract.startsWith('F') ? 'bg-[#F27D26]/10 text-[#F27D26]' : p.contract.startsWith('M') ? 'bg-purple-100 text-purple-700' : 'bg-black/5 opacity-60'}`}>{p.contract}</span>
                         <span className="font-mono text-sm w-10 text-right shrink-0">${p.salary}</span>
-                        {/* IL toggle — click to manually mark/unmark a player as IL */}
+                        {/* IL toggle: always visible (filled) when flagged; only on row-hover when not flagged */}
                         <button
                           onClick={e => { e.stopPropagation(); toggleManualIL(p.name); }}
                           title={group.ilGroup ? 'Remove IL flag' : 'Mark as IL'}
-                          className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 border transition-colors ${group.ilGroup ? 'bg-red-500 text-white border-red-500' : 'bg-transparent text-red-300 border-red-200 hover:bg-red-50'}`}
+                          className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 border transition-all ${group.ilGroup ? 'bg-red-500 text-white border-red-500' : 'opacity-0 group-hover:opacity-100 bg-transparent text-red-400 border-red-200 hover:bg-red-50'}`}
                         >IL</button>
                         <ChevronDown size={14} className={`opacity-30 shrink-0 transition-transform ${selectedPlayer?.id === p.id ? 'rotate-180' : ''}`} />
                       </button>
