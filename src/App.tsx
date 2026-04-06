@@ -88,6 +88,21 @@ export default function App() {
   const [parsedProjections, setParsedProjections] = useState<PlayerProjection[] | null>(null);
   const [parsedFGBat, setParsedFGBat] = useState<FGBatterSeason[]>([]);
   const [parsedFGPit, setParsedFGPit] = useState<FGPitcherSeason[]>([]);
+  // Manually flagged IL players (by name) — persisted to localStorage
+  const [manualIL, setManualIL] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('eyj_manual_il');
+      return saved ? new Set(JSON.parse(saved)) : new Set<string>();
+    } catch { return new Set<string>(); }
+  });
+  const toggleManualIL = (name: string) => {
+    setManualIL(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      localStorage.setItem('eyj_manual_il', JSON.stringify([...next]));
+      return next;
+    });
+  };
 
   // Central handler: apply parsed data by type. Used by both auto-load and manual import.
   // season is required for fg-bat / fg-pit (parsed from filename); ignored for all other types.
@@ -363,6 +378,8 @@ export default function App() {
               parsedStuff={parsedStuff}
               parsedFGBat={parsedFGBat}
               parsedFGPit={parsedFGPit}
+              manualIL={manualIL}
+              toggleManualIL={toggleManualIL}
             />
           )}
           {activeTab === 'trades' && (
@@ -808,6 +825,7 @@ function ManageView({
   parsedFaab, transactions, categoryStandings, leagueRoster, freeAgents, dataTimestamps,
   faabBidLog, onSaveFaabBid, onUpdateFaabBid, onDeleteFaabBid,
   parsedStats, parsedProjections, parsedStatcast, parsedStuff, parsedFGBat, parsedFGPit,
+  manualIL, toggleManualIL,
 }: {
   roster: Player[];
   leagueDetails: LeagueDetails | null;
@@ -829,6 +847,8 @@ function ManageView({
   parsedStuff: any[] | null;
   parsedFGBat: FGBatterSeason[];
   parsedFGPit: FGPitcherSeason[];
+  manualIL: Set<string>;
+  toggleManualIL: (name: string) => void;
   key?: any;
 }) {
   const [section, setSection] = useState<'roster' | 'keepers' | 'adddrop' | 'minors'>('roster');
@@ -844,7 +864,7 @@ function ManageView({
   const leagueILNames = new Set(
     eyjLeagueRoster.filter(lp => lp.status === 'injured').map(lp => normName(lp.name))
   );
-  const isIL = (p: Player) => !!p.isIL || leagueILNames.has(normName(p.name));
+  const isIL = (p: Player) => !!p.isIL || leagueILNames.has(normName(p.name)) || manualIL.has(p.name);
 
   const activePlayers  = roster.filter(p => !p.isMinor && !p.isReserve && !isIL(p));
   const ilPlayers      = roster.filter(p => !p.isMinor && !p.isReserve && isIL(p));
@@ -974,6 +994,12 @@ function ManageView({
                         <span className="text-[10px] opacity-40 shrink-0">{p.team}</span>
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${p.contract.startsWith('K') || p.contract.startsWith('F') ? 'bg-[#F27D26]/10 text-[#F27D26]' : p.contract.startsWith('M') ? 'bg-purple-100 text-purple-700' : 'bg-black/5 opacity-60'}`}>{p.contract}</span>
                         <span className="font-mono text-sm w-10 text-right shrink-0">${p.salary}</span>
+                        {/* IL toggle — click to manually mark/unmark a player as IL */}
+                        <button
+                          onClick={e => { e.stopPropagation(); toggleManualIL(p.name); }}
+                          title={group.ilGroup ? 'Remove IL flag' : 'Mark as IL'}
+                          className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 border transition-colors ${group.ilGroup ? 'bg-red-500 text-white border-red-500' : 'bg-transparent text-red-300 border-red-200 hover:bg-red-50'}`}
+                        >IL</button>
                         <ChevronDown size={14} className={`opacity-30 shrink-0 transition-transform ${selectedPlayer?.id === p.id ? 'rotate-180' : ''}`} />
                       </button>
                     );
@@ -2414,18 +2440,26 @@ function StrategyLabView({
   const isOnRoster = (name: string) => rosterNames.has(name.toLowerCase().replace(/[^a-z]/g, ''));
 
   // Build the full set of owned players across all fantasy teams from leagueRoster.
-  // This is more reliable than freeAgents (which can be stale) — if a player appears
-  // on any team's leagueRoster they are definitely not available.
+  // leagueRoster is the authoritative source — if it's loaded, any player on any team is not available.
+  // freeAgents is a secondary filter when leagueRoster is absent, but it can be stale.
   const ownedNames = new Set(
     Object.values(leagueRoster ?? {}).flat().map(lp => lp.name.toLowerCase().replace(/[^a-z]/g, ''))
   );
-  const isOwned = (name: string) => ownedNames.has(name.toLowerCase().replace(/[^a-z]/g, ''));
+  const hasLeagueRoster = (leagueRoster !== null && Object.keys(leagueRoster).length > 0);
+  // If leagueRoster is loaded: a player is available iff they are NOT in ownedNames.
+  // If leagueRoster is absent: a player is available iff they ARE in freeAgents.
+  const faNames = new Set(freeAgents.map(fa => fa.name.toLowerCase().replace(/[^a-z]/g, '')));
+  const isAvailableInLeague = (name: string) => {
+    const key = name.toLowerCase().replace(/[^a-z]/g, '');
+    if (hasLeagueRoster) return !ownedNames.has(key);
+    return faNames.has(key); // fallback: must be in the freeAgents list
+  };
 
   // Batters: anchor on xwOBA > .350, enrich with CBS stats and Steamer projections
   const radarBatters = (() => {
     // Collect candidate names from Statcast (quality of contact signal)
     const statcastCandidates = (parsedStatcast || [])
-      .filter(d => (d.xwoba || 0) > 0.350 && !isOnRoster(d.name) && !isOwned(d.name));
+      .filter(d => (d.xwoba || 0) > 0.350 && !isOnRoster(d.name) && isAvailableInLeague(d.name));
 
     return statcastCandidates.map(d => {
       const fa   = freeAgents.find(p => nameMatch(p.name, d.name));
@@ -2455,7 +2489,7 @@ function StrategyLabView({
   // Pitchers: anchor on Stuff+ > 108, enrich with CBS stats and Steamer projections
   const radarPitchers = (() => {
     const stuffCandidates = (parsedStuff || [])
-      .filter((d: any) => (d.stuffPlus || 0) > 108 && !isOnRoster(d.name) && !isOwned(d.name));
+      .filter((d: any) => (d.stuffPlus || 0) > 108 && !isOnRoster(d.name) && isAvailableInLeague(d.name));
 
     return stuffCandidates.map((d: any) => {
       const fa   = freeAgents.find(p => nameMatch(p.name, d.name));
